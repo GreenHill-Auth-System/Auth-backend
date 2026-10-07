@@ -146,6 +146,7 @@ MAILERS = {
 # Allow the React development server to communicate with Django.
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "https://greenhill-auth-frontend.onrender.com",
 ]
 
 # Allow the browser to send the Django authentication session cookie.
@@ -154,6 +155,8 @@ CORS_ALLOW_CREDENTIALS = True
 # Trust the React development server for Django CSRF-protected requests.
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
+    "https://greenhill-auth-frontend.onrender.com",
+
 ]
 
 REST_FRAMEWORK = {
