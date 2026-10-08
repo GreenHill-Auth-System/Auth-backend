@@ -482,3 +482,31 @@ def sign_out(request):
         },
         status=200,
     )
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def diagnostic_test_user(request):
+    User = get_user_model()
+
+    email = "refactory@greenhillacademy.ac.ug"
+
+    user = User.objects.filter(email=email).first()
+
+    if not user:
+        return JsonResponse(
+            {
+                "exists": False,
+            },
+            status=200,
+        )
+
+    return JsonResponse(
+        {
+            "exists": True,
+            "email": user.email,
+            "username": user.username,
+            "active": user.is_active,
+        },
+        status=200,
+    )

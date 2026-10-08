@@ -29,4 +29,9 @@ urlpatterns = [
         views.sign_out,
         name="sign_out",
     ),
+    path(
+    "diagnostic/test-user/",
+    views.diagnostic_test_user,
+    name="diagnostic_test_user",
+),
 ]
