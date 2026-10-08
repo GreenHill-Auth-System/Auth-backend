@@ -152,6 +152,23 @@ CORS_ALLOWED_ORIGINS = [
 # Allow the browser to send the Django authentication session cookie.
 CORS_ALLOW_CREDENTIALS = True
 
+
+# Allow the browser to send the Django authentication session cookie.
+CORS_ALLOW_CREDENTIALS = True
+
+# Production authentication session cookie settings.
+SESSION_COOKIE_SAMESITE = "None"
+SESSION_COOKIE_SECURE = True
+
+CSRF_COOKIE_SAMESITE = "None"
+CSRF_COOKIE_SECURE = True
+
+# Trust the React development server and production frontend.
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "https://greenhill-auth-frontend.onrender.com",
+]
+
 # Trust the React development server for Django CSRF-protected requests.
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
