@@ -30,6 +30,9 @@ from google_auth_oauthlib.flow import Flow
 
 from authentication.domain_guard import is_greenhill_email
 
+if os.getenv("DJANGO_ENV") == "development":
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
 
 GOOGLE_SCOPES = [
     "openid",
