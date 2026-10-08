@@ -30,7 +30,7 @@ DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 
 ALLOWED_HOSTS = [
     host.strip()
-    for host in os.getenv("127.0.0.1,localhost", "").split(",")
+    for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost,greenhill-auth-backend.onrender.com").split(",")
     if host.strip()
 ]
 
@@ -189,3 +189,6 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
+
+# Tell Django it is behind a secure proxy (Required for Render HTTPS)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
