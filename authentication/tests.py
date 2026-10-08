@@ -9,13 +9,6 @@ from authentication.domain_guard import is_greenhill_email
 
 class GoogleLoginTests(TestCase):
 
-    # Tests for initiating Google OAuth 2.0 / OpenID Connect authentication.
-    # These tests verify that the authentication gateway:
-    # - Redirects users to Google's authorization endpoint.
-    # - Generates and stores OAuth state for CSRF protection.
-    # - Generates and stores a PKCE code verifier.
-    # - Includes the PKCE challenge in the Google authorization request.
-
     @patch("authentication.views.os.getenv")
     def test_google_login_redirects_to_google(self, mock_getenv):
         mock_getenv.side_effect = lambda key, default=None: {
@@ -43,13 +36,8 @@ class GoogleLoginTests(TestCase):
 
         self.client.get(reverse("google_login"))
 
-        self.assertIn(
-            "google_oauth_state",
-            self.client.session,
-        )
-        self.assertTrue(
-            self.client.session["google_oauth_state"]
-        )
+        self.assertIn("google_oauth_state", self.client.session)
+        self.assertTrue(self.client.session["google_oauth_state"])
 
     @patch("authentication.views.os.getenv")
     def test_google_login_stores_code_verifier(self, mock_getenv):
@@ -63,13 +51,8 @@ class GoogleLoginTests(TestCase):
 
         self.client.get(reverse("google_login"))
 
-        self.assertIn(
-            "google_code_verifier",
-            self.client.session,
-        )
-        self.assertTrue(
-            self.client.session["google_code_verifier"]
-        )
+        self.assertIn("google_code_verifier", self.client.session)
+        self.assertTrue(self.client.session["google_code_verifier"])
 
     @patch("authentication.views.os.getenv")
     def test_google_login_includes_pkce_challenge(self, mock_getenv):
@@ -83,21 +66,11 @@ class GoogleLoginTests(TestCase):
 
         response = self.client.get(reverse("google_login"))
 
-        self.assertIn(
-            "code_challenge=",
-            response.url,
-        )
-        self.assertIn(
-            "code_challenge_method=S256",
-            response.url,
-        )
+        self.assertIn("code_challenge=", response.url)
+        self.assertIn("code_challenge_method=S256", response.url)
 
 
 class GreenHillDomainGuardTests(TestCase):
-
-    # Tests for the GreenHill Workspace domain restriction.
-    # Only users whose Google account belongs to the official
-    # GreenHill Workspace domain are permitted to authenticate.
 
     def test_greenhill_email_is_allowed(self):
         self.assertTrue(
@@ -115,16 +88,12 @@ class GreenHillDomainGuardTests(TestCase):
 
     def test_gmail_account_is_rejected(self):
         self.assertFalse(
-            is_greenhill_email(
-                "employee@gmail.com"
-            )
+            is_greenhill_email("employee@gmail.com")
         )
 
     def test_old_greenhill_domain_is_rejected(self):
         self.assertFalse(
-            is_greenhill_email(
-                "employee@greenhill.edu"
-            )
+            is_greenhill_email("employee@greenhill.edu")
         )
 
     def test_similar_domain_is_rejected(self):
@@ -142,22 +111,13 @@ class GreenHillDomainGuardTests(TestCase):
         )
 
     def test_missing_email_is_rejected(self):
-        self.assertFalse(
-            is_greenhill_email("")
-        )
+        self.assertFalse(is_greenhill_email(""))
 
     def test_none_email_is_rejected(self):
-        self.assertFalse(
-            is_greenhill_email(None)
-        )
+        self.assertFalse(is_greenhill_email(None))
 
 
 class GoogleCallbackSecurityTests(TestCase):
-
-    # Tests for security controls applied to the OAuth callback.
-    # The callback requires both:
-    # - OAuth state, which protects against CSRF attacks.
-    # - PKCE code verifier, which protects the authorization code exchange.
 
     def test_callback_rejects_missing_oauth_state(self):
         response = self.client.get(
@@ -205,9 +165,6 @@ class GoogleCallbackSecurityTests(TestCase):
 
 
 class GoogleCallbackDomainGuardTests(TestCase):
-
-    # Tests that the OAuth callback enforces the GreenHill Workspace
-    # domain restriction after Google identity verification.
 
     @patch("authentication.views.id_token.verify_oauth2_token")
     @patch("authentication.views.Flow")
@@ -300,7 +257,7 @@ class GoogleCallbackDomainGuardTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response.url,
-            "http://localhost:5173/workspaces",
+            "http://localhost:5173/workspaces?login=success",
         )
 
         self.assertEqual(
@@ -319,12 +276,6 @@ class GoogleCallbackDomainGuardTests(TestCase):
 
 
 class GoogleAuthenticationApiResponseTests(TestCase):
-
-    # Tests the authentication callback response used by the frontend.
-    # A successful GreenHill Google authentication creates the local
-    # Django session and redirects the user to the React workspace.
-    # A non-GreenHill account is redirected back to the login page
-    # with an error code.
 
     @patch("authentication.views.id_token.verify_oauth2_token")
     @patch("authentication.views.Flow")
@@ -370,7 +321,7 @@ class GoogleAuthenticationApiResponseTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response.url,
-            "http://localhost:5173/workspaces",
+            "http://localhost:5173/workspaces?login=success",
         )
 
         self.assertEqual(
@@ -437,10 +388,6 @@ class GoogleAuthenticationApiResponseTests(TestCase):
 
 class GoogleIdTokenVerificationTests(TestCase):
 
-    # Tests for Google ID token verification.
-    # The backend must verify the ID token with Google's verification
-    # mechanism before trusting any identity information contained in it.
-
     @patch("authentication.views.id_token.verify_oauth2_token")
     @patch("authentication.views.Flow")
     @patch("authentication.views.os.getenv")
@@ -489,16 +436,7 @@ class GoogleIdTokenVerificationTests(TestCase):
 
 class LocalUserAuthenticationTests(TestCase):
 
-    # Tests for creating and authenticating a local application user
-    # after successful Google Workspace identity verification.
-    # Google remains the identity provider, while Django maintains the
-    # application's local authenticated user session.
-
     def test_new_google_user_is_created_locally(self):
-
-        # A verified GreenHill Workspace user should have a corresponding
-        # local Django user account.
-
         email = "employee@greenhillacademy.ac.ug"
         name = "GreenHill Employee"
 
@@ -517,10 +455,6 @@ class LocalUserAuthenticationTests(TestCase):
         self.assertEqual(user.first_name, name)
 
     def test_existing_google_user_is_reused(self):
-
-        # A returning Google user should reuse the existing local account
-        # instead of creating a duplicate user.
-
         User = get_user_model()
 
         email = "employee@greenhillacademy.ac.ug"
@@ -546,10 +480,6 @@ class LocalUserAuthenticationTests(TestCase):
         )
 
     def test_local_user_can_be_authenticated(self):
-
-        # A valid local user should be able to establish an authenticated
-        # Django session.
-
         User = get_user_model()
 
         user = User.objects.create_user(
@@ -570,10 +500,6 @@ class LocalUserAuthenticationTests(TestCase):
         )
 
     def test_rejected_google_account_does_not_create_local_user(self):
-
-        # A Google account outside the GreenHill Workspace domain must not
-        # result in a local application user being created.
-
         User = get_user_model()
 
         email = "testuser@gmail.com"
@@ -589,11 +515,6 @@ class LocalUserAuthenticationTests(TestCase):
 
 class GoogleCallbackLocalUserTests(TestCase):
 
-    # Tests that a successfully verified GreenHill Workspace identity
-    # is connected to a local Django user and authenticated session.
-    # Google remains the identity provider. Django maintains the local
-    # application user and session after Google identity verification.
-
     @patch("authentication.views.id_token.verify_oauth2_token")
     @patch("authentication.views.Flow")
     @patch("authentication.views.os.getenv")
@@ -603,10 +524,6 @@ class GoogleCallbackLocalUserTests(TestCase):
         mock_flow_class,
         mock_verify_token,
     ):
-
-        # A first-time GreenHill Workspace user should be created locally
-        # and authenticated into the Django session.
-
         mock_getenv.side_effect = lambda key, default=None: {
             "GOOGLE_CLIENT_ID": "test-client-id",
             "GOOGLE_CLIENT_SECRET": "test-client-secret",
@@ -642,7 +559,7 @@ class GoogleCallbackLocalUserTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response.url,
-            "http://localhost:5173/workspaces",
+            "http://localhost:5173/workspaces?login=success",
         )
 
         User = get_user_model()
@@ -690,10 +607,6 @@ class GoogleCallbackLocalUserTests(TestCase):
         mock_flow_class,
         mock_verify_token,
     ):
-
-        # A returning GreenHill Workspace user should reuse the existing
-        # local account rather than creating a duplicate.
-
         User = get_user_model()
 
         existing_user = User.objects.create_user(
@@ -737,7 +650,7 @@ class GoogleCallbackLocalUserTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response.url,
-            "http://localhost:5173/workspaces",
+            "http://localhost:5173/workspaces?login=success",
         )
 
         self.assertEqual(
@@ -768,10 +681,6 @@ class GoogleCallbackLocalUserTests(TestCase):
 
 
 class ManualLoginTests(TestCase):
-
-    # Tests for the manual email/password authentication endpoint.
-    # The backend is responsible for validating credentials and returning
-    # structured responses that the frontend can display to the user.
 
     def test_missing_email_and_password_returns_required_fields_error(self):
         response = self.client.post(
