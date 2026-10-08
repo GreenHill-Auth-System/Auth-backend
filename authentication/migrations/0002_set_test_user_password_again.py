@@ -3,7 +3,7 @@ from django.contrib.auth.hashers import make_password
 import os
 
 
-def set_test_user_password(apps, schema_editor):
+def create_test_user(apps, schema_editor):
     User = apps.get_model("auth", "User")
 
     email = "refactory@greenhillacademy.ac.ug"
@@ -12,13 +12,26 @@ def set_test_user_password(apps, schema_editor):
     if not password:
         return
 
-    User.objects.filter(email=email).update(
-        password=make_password(password)
+    user, created = User.objects.get_or_create(
+        email=email,
+        defaults={
+            "username": email,
+            "is_active": True,
+        },
     )
 
+    user.username = email
+    user.password = make_password(password)
+    user.is_active = True
+    user.save()
 
-def reverse_test_user_password(apps, schema_editor):
-    pass
+
+def reverse_test_user(apps, schema_editor):
+    User = apps.get_model("auth", "User")
+
+    User.objects.filter(
+        email="refactory@greenhillacademy.ac.ug"
+    ).delete()
 
 
 class Migration(migrations.Migration):
@@ -29,7 +42,7 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RunPython(
-            set_test_user_password,
-            reverse_test_user_password,
+            create_test_user,
+            reverse_test_user,
         ),
     ]
