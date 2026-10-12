@@ -1,3 +1,4 @@
+
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -5,6 +6,34 @@ from django.test import TestCase
 from django.urls import reverse
 
 from authentication.domain_guard import is_greenhill_email
+
+
+CEO_EMAIL = "refactory@greenhillacademy.ac.ug"
+
+ALL_SYSTEMS = [
+    "EID",
+    "Procurement",
+    "Incident Service Management",
+]
+
+
+def expected_user(email, name):
+    """Return the expected role and system access for an account."""
+    normalized_email = (email or "").strip().lower()
+
+    if normalized_email == CEO_EMAIL:
+        role = "CEO"
+        authorized_systems = ALL_SYSTEMS.copy()
+    else:
+        role = "Greenhill User"
+        authorized_systems = []
+
+    return {
+        "email": normalized_email,
+        "name": name,
+        "role": role,
+        "authorized_systems": authorized_systems,
+    }
 
 
 class GoogleLoginTests(TestCase):
@@ -74,27 +103,19 @@ class GreenHillDomainGuardTests(TestCase):
 
     def test_greenhill_email_is_allowed(self):
         self.assertTrue(
-            is_greenhill_email(
-                "employee@greenhillacademy.ac.ug"
-            )
+            is_greenhill_email("employee@greenhillacademy.ac.ug")
         )
 
     def test_greenhill_email_check_is_case_insensitive(self):
         self.assertTrue(
-            is_greenhill_email(
-                "EMPLOYEE@GREENHILLACADEMY.AC.UG"
-            )
+            is_greenhill_email("EMPLOYEE@GREENHILLACADEMY.AC.UG")
         )
 
     def test_gmail_account_is_rejected(self):
-        self.assertFalse(
-            is_greenhill_email("employee@gmail.com")
-        )
+        self.assertFalse(is_greenhill_email("employee@gmail.com"))
 
     def test_old_greenhill_domain_is_rejected(self):
-        self.assertFalse(
-            is_greenhill_email("employee@greenhill.edu")
-        )
+        self.assertFalse(is_greenhill_email("employee@greenhill.edu"))
 
     def test_similar_domain_is_rejected(self):
         self.assertFalse(
@@ -120,9 +141,7 @@ class GreenHillDomainGuardTests(TestCase):
 class GoogleCallbackSecurityTests(TestCase):
 
     def test_callback_rejects_missing_oauth_state(self):
-        response = self.client.get(
-            reverse("google_callback")
-        )
+        response = self.client.get(reverse("google_callback"))
 
         self.assertEqual(response.status_code, 400)
         self.assertIn(
@@ -184,9 +203,7 @@ class GoogleCallbackDomainGuardTests(TestCase):
             "FRONTEND_URL": "http://localhost:5173",
         }.get(key, default)
 
-        mock_flow = (
-            mock_flow_class.from_client_config.return_value
-        )
+        mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
         mock_verify_token.return_value = {
@@ -201,10 +218,7 @@ class GoogleCallbackDomainGuardTests(TestCase):
 
         response = self.client.get(
             reverse("google_callback"),
-            {
-                "state": "test-state",
-                "code": "test-code",
-            },
+            {"state": "test-state", "code": "test-code"},
         )
 
         self.assertEqual(response.status_code, 302)
@@ -231,9 +245,7 @@ class GoogleCallbackDomainGuardTests(TestCase):
             "FRONTEND_URL": "http://localhost:5173",
         }.get(key, default)
 
-        mock_flow = (
-            mock_flow_class.from_client_config.return_value
-        )
+        mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
         mock_verify_token.return_value = {
@@ -248,10 +260,7 @@ class GoogleCallbackDomainGuardTests(TestCase):
 
         response = self.client.get(
             reverse("google_callback"),
-            {
-                "state": "test-state",
-                "code": "test-code",
-            },
+            {"state": "test-state", "code": "test-code"},
         )
 
         self.assertEqual(response.status_code, 302)
@@ -259,19 +268,12 @@ class GoogleCallbackDomainGuardTests(TestCase):
             response.url,
             "http://localhost:5173/workspaces?login=success",
         )
-
         self.assertEqual(
             self.client.session["authenticated_user"],
-            {
-                "email": "employee@greenhillacademy.ac.ug",
-                "name": "GreenHill Employee",
-                "role": "Greenhill User",
-                "authorized_systems": [
-                    "EID",
-                    "Procurement",
-                    "Incident Service Management",
-                ],
-            },
+            expected_user(
+                "employee@greenhillacademy.ac.ug",
+                "GreenHill Employee",
+            ),
         )
 
 
@@ -295,9 +297,7 @@ class GoogleAuthenticationApiResponseTests(TestCase):
             "FRONTEND_URL": "http://localhost:5173",
         }.get(key, default)
 
-        mock_flow = (
-            mock_flow_class.from_client_config.return_value
-        )
+        mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
         mock_verify_token.return_value = {
@@ -312,10 +312,7 @@ class GoogleAuthenticationApiResponseTests(TestCase):
 
         response = self.client.get(
             reverse("google_callback"),
-            {
-                "state": "test-state",
-                "code": "test-code",
-            },
+            {"state": "test-state", "code": "test-code"},
         )
 
         self.assertEqual(response.status_code, 302)
@@ -323,19 +320,12 @@ class GoogleAuthenticationApiResponseTests(TestCase):
             response.url,
             "http://localhost:5173/workspaces?login=success",
         )
-
         self.assertEqual(
             self.client.session["authenticated_user"],
-            {
-                "email": "employee@greenhillacademy.ac.ug",
-                "name": "GreenHill Employee",
-                "role": "Greenhill User",
-                "authorized_systems": [
-                    "EID",
-                    "Procurement",
-                    "Incident Service Management",
-                ],
-            },
+            expected_user(
+                "employee@greenhillacademy.ac.ug",
+                "GreenHill Employee",
+            ),
         )
 
     @patch("authentication.views.id_token.verify_oauth2_token")
@@ -356,9 +346,7 @@ class GoogleAuthenticationApiResponseTests(TestCase):
             "FRONTEND_URL": "http://localhost:5173",
         }.get(key, default)
 
-        mock_flow = (
-            mock_flow_class.from_client_config.return_value
-        )
+        mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
         mock_verify_token.return_value = {
@@ -373,10 +361,7 @@ class GoogleAuthenticationApiResponseTests(TestCase):
 
         response = self.client.get(
             reverse("google_callback"),
-            {
-                "state": "test-state",
-                "code": "test-code",
-            },
+            {"state": "test-state", "code": "test-code"},
         )
 
         self.assertEqual(response.status_code, 302)
@@ -405,9 +390,7 @@ class GoogleIdTokenVerificationTests(TestCase):
             ),
         }.get(key, default)
 
-        mock_flow = (
-            mock_flow_class.from_client_config.return_value
-        )
+        mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "invalid-id-token"
 
         mock_verify_token.side_effect = ValueError(
@@ -421,15 +404,12 @@ class GoogleIdTokenVerificationTests(TestCase):
 
         response = self.client.get(
             reverse("google_callback"),
-            {
-                "state": "test-state",
-                "code": "test-code",
-            },
+            {"state": "test-state", "code": "test-code"},
         )
 
         self.assertEqual(response.status_code, 400)
         self.assertIn(
-            "Google ID token verification failed:",
+            "Google ID token verification failed.",
             response.content.decode(),
         )
 
@@ -456,7 +436,6 @@ class LocalUserAuthenticationTests(TestCase):
 
     def test_existing_google_user_is_reused(self):
         User = get_user_model()
-
         email = "employee@greenhillacademy.ac.ug"
 
         existing_user = User.objects.create_user(
@@ -474,10 +453,7 @@ class LocalUserAuthenticationTests(TestCase):
         )
 
         self.assertFalse(created)
-        self.assertEqual(
-            user.id,
-            existing_user.id,
-        )
+        self.assertEqual(user.id, existing_user.id)
 
     def test_local_user_can_be_authenticated(self):
         User = get_user_model()
@@ -501,16 +477,10 @@ class LocalUserAuthenticationTests(TestCase):
 
     def test_rejected_google_account_does_not_create_local_user(self):
         User = get_user_model()
-
         email = "testuser@gmail.com"
 
-        self.assertFalse(
-            is_greenhill_email(email)
-        )
-
-        self.assertFalse(
-            User.objects.filter(username=email).exists()
-        )
+        self.assertFalse(is_greenhill_email(email))
+        self.assertFalse(User.objects.filter(username=email).exists())
 
 
 class GoogleCallbackLocalUserTests(TestCase):
@@ -533,9 +503,7 @@ class GoogleCallbackLocalUserTests(TestCase):
             "FRONTEND_URL": "http://localhost:5173",
         }.get(key, default)
 
-        mock_flow = (
-            mock_flow_class.from_client_config.return_value
-        )
+        mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
         mock_verify_token.return_value = {
@@ -550,10 +518,7 @@ class GoogleCallbackLocalUserTests(TestCase):
 
         response = self.client.get(
             reverse("google_callback"),
-            {
-                "state": "test-state",
-                "code": "test-code",
-            },
+            {"state": "test-state", "code": "test-code"},
         )
 
         self.assertEqual(response.status_code, 302)
@@ -574,28 +539,17 @@ class GoogleCallbackLocalUserTests(TestCase):
             email="employee@greenhillacademy.ac.ug"
         )
 
-        self.assertEqual(
-            user.first_name,
-            "GreenHill Employee",
-        )
-
+        self.assertEqual(user.first_name, "GreenHill Employee")
         self.assertEqual(
             int(self.client.session["_auth_user_id"]),
             user.id,
         )
-
         self.assertEqual(
             self.client.session["authenticated_user"],
-            {
-                "email": "employee@greenhillacademy.ac.ug",
-                "name": "GreenHill Employee",
-                "role": "Greenhill User",
-                "authorized_systems": [
-                    "EID",
-                    "Procurement",
-                    "Incident Service Management",
-                ],
-            },
+            expected_user(
+                "employee@greenhillacademy.ac.ug",
+                "GreenHill Employee",
+            ),
         )
 
     @patch("authentication.views.id_token.verify_oauth2_token")
@@ -624,9 +578,7 @@ class GoogleCallbackLocalUserTests(TestCase):
             "FRONTEND_URL": "http://localhost:5173",
         }.get(key, default)
 
-        mock_flow = (
-            mock_flow_class.from_client_config.return_value
-        )
+        mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
         mock_verify_token.return_value = {
@@ -641,10 +593,7 @@ class GoogleCallbackLocalUserTests(TestCase):
 
         response = self.client.get(
             reverse("google_callback"),
-            {
-                "state": "test-state",
-                "code": "test-code",
-            },
+            {"state": "test-state", "code": "test-code"},
         )
 
         self.assertEqual(response.status_code, 302)
@@ -659,24 +608,16 @@ class GoogleCallbackLocalUserTests(TestCase):
             ).count(),
             1,
         )
-
         self.assertEqual(
             int(self.client.session["_auth_user_id"]),
             existing_user.id,
         )
-
         self.assertEqual(
             self.client.session["authenticated_user"],
-            {
-                "email": "employee@greenhillacademy.ac.ug",
-                "name": "GreenHill Employee",
-                "role": "Greenhill User",
-                "authorized_systems": [
-                    "EID",
-                    "Procurement",
-                    "Incident Service Management",
-                ],
-            },
+            expected_user(
+                "employee@greenhillacademy.ac.ug",
+                "GreenHill Employee",
+            ),
         )
 
 
@@ -690,7 +631,6 @@ class ManualLoginTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-
         self.assertEqual(
             response.json(),
             {
@@ -709,49 +649,35 @@ class ManualLoginTests(TestCase):
     def test_missing_email_returns_required_fields_error(self):
         response = self.client.post(
             reverse("manual_login"),
-            data={
-                "password": "test-password",
-            },
+            data={"password": "test-password"},
             content_type="application/json",
         )
 
         self.assertEqual(response.status_code, 400)
-
         self.assertEqual(
             response.json()["error"],
             "required_fields",
         )
-
         self.assertEqual(
             response.json()["fields"],
-            {
-                "email": True,
-                "password": False,
-            },
+            {"email": True, "password": False},
         )
 
     def test_missing_password_returns_required_fields_error(self):
         response = self.client.post(
             reverse("manual_login"),
-            data={
-                "email": "employee@greenhillacademy.ac.ug",
-            },
+            data={"email": "employee@greenhillacademy.ac.ug"},
             content_type="application/json",
         )
 
         self.assertEqual(response.status_code, 400)
-
         self.assertEqual(
             response.json()["error"],
             "required_fields",
         )
-
         self.assertEqual(
             response.json()["fields"],
-            {
-                "email": False,
-                "password": True,
-            },
+            {"email": False, "password": True},
         )
 
     def test_non_greenhill_email_is_rejected(self):
@@ -765,7 +691,6 @@ class ManualLoginTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 403)
-
         self.assertEqual(
             response.json(),
             {
@@ -801,7 +726,6 @@ class ManualLoginTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 401)
-
         self.assertEqual(
             response.json(),
             {
@@ -829,18 +753,13 @@ class ManualLoginTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 401)
-
         self.assertEqual(
             response.json()["error"],
             "invalid_credentials",
         )
-
         self.assertEqual(
             response.json()["fields"],
-            {
-                "email": True,
-                "password": True,
-            },
+            {"email": True, "password": True},
         )
 
     def test_correct_credentials_create_authenticated_session(self):
@@ -865,40 +784,25 @@ class ManualLoginTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
 
+        user_data = expected_user(
+            "employee@greenhillacademy.ac.ug",
+            "GreenHill Employee",
+        )
+
         self.assertEqual(
             response.json(),
             {
                 "authenticated": True,
-                "user": {
-                    "email": "employee@greenhillacademy.ac.ug",
-                    "name": "GreenHill Employee",
-                    "role": "Greenhill User",
-                    "authorized_systems": [
-                        "EID",
-                        "Procurement",
-                        "Incident Service Management",
-                    ],
-                },
+                "user": user_data,
             },
         )
-
         self.assertEqual(
             int(self.client.session["_auth_user_id"]),
             user.id,
         )
-
         self.assertEqual(
             self.client.session["authenticated_user"],
-            {
-                "email": "employee@greenhillacademy.ac.ug",
-                "name": "GreenHill Employee",
-                "role": "Greenhill User",
-                "authorized_systems": [
-                    "EID",
-                    "Procurement",
-                    "Incident Service Management",
-                ],
-            },
+            user_data,
         )
 
     def test_manual_login_accepts_uppercase_greenhill_email(self):
@@ -920,6 +824,45 @@ class ManualLoginTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(
-            response.json()["authenticated"]
+        self.assertTrue(response.json()["authenticated"])
+
+    def test_ceo_receives_access_to_all_three_systems(self):
+        User = get_user_model()
+        email = CEO_EMAIL
+
+        user = User.objects.create_user(
+            username=email,
+            email=email,
+            first_name="Refactory",
+            password="correct-password",
+        )
+
+        response = self.client.post(
+            reverse("manual_login"),
+            data={
+                "email": email,
+                "password": "correct-password",
+                "remember": True,
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        user_data = expected_user(email, "Refactory")
+
+        self.assertEqual(
+            response.json(),
+            {
+                "authenticated": True,
+                "user": user_data,
+            },
+        )
+        self.assertEqual(
+            int(self.client.session["_auth_user_id"]),
+            user.id,
+        )
+        self.assertEqual(
+            self.client.session["authenticated_user"],
+            user_data,
         )
