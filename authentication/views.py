@@ -1,3 +1,4 @@
+
 import base64
 import hashlib
 import os
@@ -13,7 +14,6 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect
 
 from drf_spectacular.utils import (
-    OpenApiExample,
     OpenApiResponse,
     extend_schema,
 )
@@ -29,6 +29,7 @@ from google.oauth2 import id_token
 from google_auth_oauthlib.flow import Flow
 
 from authentication.domain_guard import is_greenhill_email
+
 
 if os.getenv("DJANGO_ENV") == "development":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
@@ -53,6 +54,38 @@ INVALID_CREDENTIALS_MESSAGE = (
     "Please check your credentials and try again."
 )
 
+# Initial GreenHill access policy.
+CEO_EMAIL = "refactory@greenhillacademy.ac.ug"
+CEO_ROLE = "CEO"
+
+INITIAL_AUTHORIZED_SYSTEMS = [
+    "EID",
+    "Procurement",
+    "Incident Service Management",
+]
+
+
+def get_user_access(email):
+    """
+    Return the initial application access assigned to a user.
+
+    The CEO receives access to all three systems.
+    Other GreenHill users can authenticate but receive no
+    system access until their permissions are assigned.
+    """
+    normalized_email = (email or "").strip().lower()
+
+    if normalized_email == CEO_EMAIL:
+        return {
+            "role": CEO_ROLE,
+            "authorized_systems": INITIAL_AUTHORIZED_SYSTEMS.copy(),
+        }
+
+    return {
+        "role": "Greenhill User",
+        "authorized_systems": [],
+    }
+
 
 def generate_code_verifier():
     return secrets.token_urlsafe(64)
@@ -68,15 +101,21 @@ def generate_code_challenge(code_verifier):
     ).rstrip(b"=").decode("ascii")
 
 
+def get_frontend_url():
+    return os.getenv(
+        "FRONTEND_URL",
+        "http://localhost:5173",
+    ).rstrip("/")
+
+
 @extend_schema(
     summary="Start Google OAuth login",
     description=(
-        "Starts the Google Workspace OAuth 2.0 / OpenID Connect "
-        "authentication flow and redirects the user to Google."
+        "Starts the Google OAuth 2.0 / OpenID Connect authentication flow."
     ),
     responses={
         302: OpenApiResponse(
-            description="Redirects the user to Google for authentication."
+            description="Redirects the user to Google."
         ),
     },
 )
@@ -118,21 +157,15 @@ def google_login(request):
 @extend_schema(
     summary="Google OAuth callback",
     description=(
-        "Handles the callback from Google after successful "
-        "OAuth 2.0 / OpenID Connect authentication."
+        "Verifies the Google identity, checks the GreenHill email domain, "
+        "creates or retrieves the local user, and establishes a session."
     ),
     responses={
         302: OpenApiResponse(
-            description=(
-                "Redirects the authenticated Greenhill user "
-                "to the frontend workspace selector."
-            )
+            description="Redirects to the frontend workspace selector."
         ),
         400: OpenApiResponse(
-            description=(
-                "OAuth state, verifier, token exchange, "
-                "or ID token error."
-            )
+            description="OAuth state, verifier, token exchange, or ID token error."
         ),
     },
 )
@@ -181,9 +214,9 @@ def google_callback(request):
             authorization_response=request.build_absolute_uri(),
             code_verifier=code_verifier,
         )
-    except Exception as exc:
+    except Exception:
         return HttpResponse(
-            f"Google token exchange failed: {exc}",
+            "Google token exchange failed.",
             status=400,
         )
 
@@ -195,34 +228,21 @@ def google_callback(request):
             requests.Request(),
             os.getenv("GOOGLE_CLIENT_ID"),
         )
-    except Exception as exc:
+    except Exception:
         return HttpResponse(
-            f"Google ID token verification failed: {exc}",
+            "Google ID token verification failed.",
             status=400,
         )
 
-    email = google_user.get("email")
-    name = google_user.get("name")
+    email = (google_user.get("email") or "").strip().lower()
+    name = google_user.get("name") or ""
 
     if not is_greenhill_email(email):
-        frontend_url = os.getenv(
-            "FRONTEND_URL",
-            "http://localhost:5173",
-        ).rstrip("/")
-
         return redirect(
-            f"{frontend_url}/?error=greenhill_account_required"
+            f"{get_frontend_url()}/?error=greenhill_account_required"
         )
 
-    authentication_result = {
-        "email": email,
-        "role": "Greenhill User",
-        "authorized_systems": [
-            "EID",
-            "Procurement",
-            "Incident Service Management",
-        ],
-    }
+    access = get_user_access(email)
 
     User = get_user_model()
 
@@ -230,36 +250,39 @@ def google_callback(request):
         email=email,
         defaults={
             "username": email,
-            "first_name": name or "",
+            "first_name": name,
         },
     )
 
+    if not user.is_active:
+        return redirect(
+            f"{get_frontend_url()}/?error=account_inactive"
+        )
+
     login(request, user)
 
-    request.session["authenticated_user"] = {
-        "email": authentication_result["email"],
-        "name": name,
-        "role": authentication_result["role"],
-        "authorized_systems": authentication_result[
-            "authorized_systems"
-        ],
+    authenticated_user = {
+        "email": email,
+        "name": name or user.get_full_name() or user.email,
+        "role": access["role"],
+        "authorized_systems": access["authorized_systems"],
     }
 
-    frontend_url = os.getenv(
-        "FRONTEND_URL",
-        "http://localhost:5173",
-    ).rstrip("/")
+    request.session["authenticated_user"] = authenticated_user
+
+    # Clear the one-time OAuth state and PKCE verifier after success.
+    request.session.pop("google_oauth_state", None)
+    request.session.pop("google_code_verifier", None)
 
     return redirect(
-        f"{frontend_url}/workspaces?login=success"
+        f"{get_frontend_url()}/workspaces?login=success"
     )
 
 
 @extend_schema(
     summary="Manual login",
     description=(
-        "Authenticates a Greenhill user using their email "
-        "and application password."
+        "Authenticates a GreenHill user using their email and application password."
     ),
     request={
         "application/json": {
@@ -268,35 +291,18 @@ def google_callback(request):
                 "email": {
                     "type": "string",
                     "format": "email",
-                    "example": "user@greenhillacademy.ac.ug",
                 },
                 "password": {
                     "type": "string",
                     "format": "password",
-                    "example": "your-password",
                 },
                 "remember": {
                     "type": "boolean",
-                    "example": True,
                 },
             },
-            "required": [
-                "email",
-                "password",
-            ],
+            "required": ["email", "password"],
         }
     },
-    examples=[
-        OpenApiExample(
-            "Manual login example",
-            value={
-                "email": "user@greenhillacademy.ac.ug",
-                "password": "your-password",
-                "remember": True,
-            },
-            request_only=True,
-        ),
-    ],
     responses={
         200: OpenApiResponse(
             description="Authentication successful."
@@ -305,13 +311,10 @@ def google_callback(request):
             description="Invalid or incomplete login request."
         ),
         401: OpenApiResponse(
-            description="Invalid email or password."
+            description="Invalid credentials."
         ),
         403: OpenApiResponse(
-            description=(
-                "The email address is not a Greenhill "
-                "Academy work email."
-            )
+            description="The email is not a GreenHill Academy work email."
         ),
     },
 )
@@ -323,7 +326,7 @@ def manual_login(request):
 
     email = str(data.get("email") or "").strip().lower()
     password = str(data.get("password") or "")
-    remember = bool(data.get("remember", False))
+    remember = data.get("remember", False)
 
     if not email or not password:
         return JsonResponse(
@@ -359,21 +362,7 @@ def manual_login(request):
         password=password,
     )
 
-    if user is None:
-        return JsonResponse(
-            {
-                "authenticated": False,
-                "error": "invalid_credentials",
-                "message": INVALID_CREDENTIALS_MESSAGE,
-                "fields": {
-                    "email": True,
-                    "password": True,
-                },
-            },
-            status=401,
-        )
-
-    if not user.is_active:
+    if user is None or not user.is_active:
         return JsonResponse(
             {
                 "authenticated": False,
@@ -392,19 +381,18 @@ def manual_login(request):
     if not remember:
         request.session.set_expiry(0)
 
+    normalized_email = (user.email or email).strip().lower()
+    access = get_user_access(normalized_email)
+
     authenticated_user = {
-        "email": user.email or email,
+        "email": normalized_email,
         "name": (
             user.get_full_name()
             or user.first_name
             or user.email
         ),
-        "role": "Greenhill User",
-        "authorized_systems": [
-            "EID",
-            "Procurement",
-            "Incident Service Management",
-        ],
+        "role": access["role"],
+        "authorized_systems": access["authorized_systems"],
     }
 
     request.session["authenticated_user"] = authenticated_user
@@ -421,8 +409,7 @@ def manual_login(request):
 @extend_schema(
     summary="Get current authenticated user",
     description=(
-        "Returns information about the currently authenticated "
-        "Greenhill user."
+        "Returns information about the currently authenticated user."
     ),
     responses={
         200: OpenApiResponse(
@@ -437,23 +424,25 @@ def manual_login(request):
 def current_user(request):
     if not request.user.is_authenticated:
         return JsonResponse(
-            {
-                "authenticated": False,
-            },
+            {"authenticated": False},
             status=401,
         )
 
-    authenticated_user = request.session.get(
-        "authenticated_user"
-    )
+    authenticated_user = request.session.get("authenticated_user")
 
     if not authenticated_user:
         return JsonResponse(
-            {
-                "authenticated": False,
-            },
+            {"authenticated": False},
             status=401,
         )
+
+    # Recalculate access from the current policy rather than trusting
+    # old role/system values stored in the session.
+    access = get_user_access(authenticated_user.get("email"))
+
+    authenticated_user["role"] = access["role"]
+    authenticated_user["authorized_systems"] = access["authorized_systems"]
+    request.session["authenticated_user"] = authenticated_user
 
     return JsonResponse(
         {
@@ -486,21 +475,18 @@ def sign_out(request):
         status=200,
     )
 
+
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
 def diagnostic_test_user(request):
+    email = CEO_EMAIL
     User = get_user_model()
-
-    email = "refactory@greenhillacademy.ac.ug"
-
-    user = User.objects.filter(email=email).first()
+    user = User.objects.filter(email__iexact=email).first()
 
     if not user:
         return JsonResponse(
-            {
-                "exists": False,
-            },
+            {"exists": False},
             status=200,
         )
 
