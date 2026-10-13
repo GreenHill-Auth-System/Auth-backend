@@ -32,3 +32,15 @@ class GreenHillOAuth2Validator(OAuth2Validator):
             "preferred_username": lambda request: request.user.username,
             "email": lambda request: request.user.email,
         }
+
+    
+    def get_discovery_claims(self, request):
+        claims = super().get_discovery_claims(request)
+        return list(set(claims) | {
+            "email",
+            "name",
+            "given_name",
+            "family_name",
+            "preferred_username",
+        })
+
