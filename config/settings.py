@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "drf_spectacular",
+     "oauth2_provider",
 
     # GreenHill applications
     "authentication",
@@ -264,3 +265,25 @@ SPECTACULAR_SETTINGS = {
 
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# GreenHill Single Sign-On (OAuth 2.0 + OpenID Connect)
+OAUTH2_PROVIDER = {
+    "OIDC_ENABLED": True,
+    "OIDC_RSA_PRIVATE_KEY": os.environ.get(
+        "OIDC_RSA_PRIVATE_KEY", ""
+    ),
+    "OIDC_ISS_ENDPOINT": os.environ.get(
+        "OIDC_ISS_ENDPOINT",
+        "https://greenhill-auth-backend2.onrender.com/o",
+    ),
+    "ACCESS_TOKEN_EXPIRE_SECONDS": 3600,
+    "ROTATE_REFRESH_TOKEN": True,
+    "SCOPES": {
+        "openid": "Authenticate users",
+        "profile": "Read basic profile information",
+        "email": "Read user email address",
+        "eid": "Access Executive Intelligence Dashboard",
+        "procurement": "Access Procurement Management",
+        "incident": "Access Incident Management",
+    },
+}
