@@ -25,8 +25,14 @@ urlpatterns = [
     # Django administration.
     path("admin/", admin.site.urls),
 
-    # Authentication endpoints.
+    # Existing authentication endpoints.
     path("auth/", include(authentication_urls.urlpatterns)),
+
+    # OAuth 2.0 / OpenID Connect endpoints.
+    path(
+        "o/",
+        include("oauth2_provider.urls", namespace="oauth2_provider"),
+    ),
 
     # OpenAPI schema and interactive API documentation.
     path(
