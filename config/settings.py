@@ -258,8 +258,15 @@ SPECTACULAR_SETTINGS = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+
 # GreenHill Single Sign-On (OAuth 2.0 + OpenID Connect)
 OAUTH2_PROVIDER = {
+
+    
+    "OAUTH2_VALIDATOR_CLASS": (
+        "authentication.oauth_validators.GreenHillOAuth2Validator"
+    ),
+
     "OIDC_ENABLED": True,
     "OIDC_RSA_PRIVATE_KEY": os.environ.get(
         "OIDC_RSA_PRIVATE_KEY", ""
