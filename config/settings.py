@@ -23,6 +23,13 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
 DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:5173"
+    if DEBUG
+    else "https://greenhill-auth-frontend2.onrender.com",
+).rstrip("/")
+LOGIN_URL = os.getenv("OIDC_LOGIN_URL", f"{FRONTEND_URL}/")
 
 ALLOWED_HOSTS = [
     host.strip()
@@ -63,11 +70,12 @@ INSTALLED_APPS = [
 
 
 MIDDLEWARE = [
+    # Handle cross-origin requests before CommonMiddleware.
+        "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
 
-    # Handle cross-origin requests before CommonMiddleware.
-    "corsheaders.middleware.CorsMiddleware",
+   
 
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -194,6 +202,9 @@ EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "https://greenhill-auth-frontend2.onrender.com",
+    "https://ismp-frontend.onrender.com",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -208,6 +219,9 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "https://greenhill-auth-frontend2.onrender.com",
+    "https://ismp-frontend.onrender.com",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
 ]
 
 
@@ -268,6 +282,27 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 # GreenHill Single Sign-On (OAuth 2.0 + OpenID Connect)
+oidc_rsa_private_key = os.environ.get(
+    "OIDC_RSA_PRIVATE_KEY",
+    "",
+).replace("\\n", "\n").strip()
+
+if not oidc_rsa_private_key:
+    oidc_rsa_private_key_file = os.environ.get(
+        "OIDC_RSA_PRIVATE_KEY_FILE",
+        os.environ.get("JWT_PRIVATE_KEY_FILE", ""),
+    ).strip()
+
+    if oidc_rsa_private_key_file:
+        try:
+            oidc_rsa_private_key = Path(
+                oidc_rsa_private_key_file
+            ).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                "Unable to read the OIDC RSA private key file."
+            ) from exc
+
 OAUTH2_PROVIDER = {
 
     
@@ -276,9 +311,7 @@ OAUTH2_PROVIDER = {
     ),
 
     "OIDC_ENABLED": True,
-    "OIDC_RSA_PRIVATE_KEY": os.environ.get(
-        "OIDC_RSA_PRIVATE_KEY", ""
-    ),
+    "OIDC_RSA_PRIVATE_KEY": oidc_rsa_private_key,
     "OIDC_ISS_ENDPOINT": os.environ.get(
         "OIDC_ISS_ENDPOINT",
         "https://greenhill-auth-backend2.onrender.com/o",
@@ -292,6 +325,7 @@ OAUTH2_PROVIDER = {
         "eid": "Access Executive Intelligence Dashboard",
         "procurement": "Access Procurement Management",
         "incident": "Access Incident Management",
+        "introspection": "Validate access tokens for trusted resource servers",
     },
 }
 

@@ -1,7 +1,5 @@
 from django.urls import path
-
 from . import views
-
 
 urlpatterns = [
     path(
@@ -30,8 +28,14 @@ urlpatterns = [
         name="sign_out",
     ),
     path(
-    "diagnostic/test-user/",
-    views.diagnostic_test_user,
-    name="diagnostic_test_user",
-),
+        "diagnostic/test-user/",
+        views.diagnostic_test_user,
+        name="diagnostic_test_user",
+    ),
+    # URL path for your Excel spreadsheet uploads
+    path(
+        "admin/upload-excel/",
+        views.BulkExcelUploadView.as_view(),
+        name="bulk_upload_excel",
+    ),
 ]

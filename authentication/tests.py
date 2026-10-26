@@ -2,10 +2,12 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.management import CommandError, call_command
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from authentication.domain_guard import is_greenhill_email
+from authentication.local_test_user import LOCAL_TEST_USER_EMAIL
 
 
 CEO_EMAIL = "refactory@greenhillacademy.ac.ug"
@@ -15,6 +17,35 @@ ALL_SYSTEMS = [
     "Procurement",
     "Incident Service Management",
 ]
+
+
+class LocalTestUserCommandTests(TestCase):
+
+    @override_settings(DEBUG=False)
+    @patch.dict(
+        "os.environ",
+        {"LOCAL_TEST_USER_PASSWORD": "S3cure!Local-Dev-Password-47"},
+    )
+    def test_command_refuses_to_run_when_debug_is_disabled(self):
+        with self.assertRaises(CommandError):
+            call_command("create_local_test_user")
+
+    @override_settings(DEBUG=True)
+    @patch.dict(
+        "os.environ",
+        {"LOCAL_TEST_USER_PASSWORD": "S3cure!Local-Dev-Password-47"},
+    )
+    def test_command_creates_non_admin_user(self):
+        call_command("create_local_test_user")
+
+        user = get_user_model().objects.get(
+            email=LOCAL_TEST_USER_EMAIL,
+        )
+        self.assertTrue(
+            user.check_password("S3cure!Local-Dev-Password-47")
+        )
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
 
 
 def expected_user(email, name):
@@ -705,6 +736,48 @@ class ManualLoginTests(TestCase):
                     "password": False,
                 },
             },
+        )
+
+    @override_settings(DEBUG=True)
+    def test_local_test_user_can_sign_in_without_admin_access(self):
+        User = get_user_model()
+        User.objects.create_user(
+            username=LOCAL_TEST_USER_EMAIL,
+            email=LOCAL_TEST_USER_EMAIL,
+            password="correct-local-password",
+        )
+
+        response = self.client.post(
+            reverse("manual_login"),
+            data={
+                "email": LOCAL_TEST_USER_EMAIL,
+                "password": "correct-local-password",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["authenticated"])
+        self.assertEqual(
+            response.json()["user"]["authorized_systems"],
+            [],
+        )
+
+    @override_settings(DEBUG=False)
+    def test_local_test_user_email_is_rejected_when_debug_is_disabled(self):
+        response = self.client.post(
+            reverse("manual_login"),
+            data={
+                "email": LOCAL_TEST_USER_EMAIL,
+                "password": "correct-local-password",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["error"],
+            "greenhill_email_required",
         )
 
     def test_incorrect_password_returns_invalid_credentials_error(self):

@@ -1,9 +1,12 @@
-
+import openpyxl
 import base64
 import hashlib
 import os
 import secrets
+import io
+from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.contrib.auth import (
     authenticate,
     get_user_model,
@@ -12,6 +15,7 @@ from django.contrib.auth import (
 )
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect
+from django.views.decorators.http import require_GET
 
 from drf_spectacular.utils import (
     OpenApiResponse,
@@ -23,12 +27,15 @@ from rest_framework.decorators import (
     permission_classes,
 )
 from rest_framework.permissions import AllowAny
-
+from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser
 from google.auth.transport import requests
 from google.oauth2 import id_token
 from google_auth_oauthlib.flow import Flow
 
 from authentication.domain_guard import is_greenhill_email
+from authentication.local_test_user import LOCAL_TEST_USER_EMAIL
+from authentication.models import ImportedCampEmail
 
 
 if os.getenv("DJANGO_ENV") == "development":
@@ -75,17 +82,36 @@ def get_user_access(email):
     """
     normalized_email = (email or "").strip().lower()
 
+    
+
+    # 1. Check for system Super Admin / CEO override first
     if normalized_email == CEO_EMAIL:
         return {
             "role": CEO_ROLE,
             "authorized_systems": INITIAL_AUTHORIZED_SYSTEMS.copy(),
         }
 
+    # 2. Query your excel staging database for this user's camp info
+    staging_record = ImportedCampEmail.objects.filter(email=normalized_email).first()
+
+    if staging_record:
+        # Map specific subsystems based on what camp they belong to
+        if staging_record.camp_name == "Procurement Camp":
+            return {
+                "role": "Procurement Operator",
+                "authorized_systems": ["Procurement"],
+            }
+        elif staging_record.camp_name == "Executive Camp":
+            return {
+                "role": "Executive Viewer",
+                "authorized_systems": ["EID"],
+            }
+        
+    # 3. Default fallback if they aren't configured in the spreadsheet yet
     return {
         "role": "Greenhill User",
-        "authorized_systems": [],
+        "authorized_systems": ["Incident Service Management"], # Open access system
     }
-
 
 def generate_code_verifier():
     return secrets.token_urlsafe(64)
@@ -102,10 +128,28 @@ def generate_code_challenge(code_verifier):
 
 
 def get_frontend_url():
-    return os.getenv(
-        "FRONTEND_URL",
-        "http://localhost:5173",
-    ).rstrip("/")
+    return settings.FRONTEND_URL
+
+
+def get_oidc_authorize_return_to(value):
+    if not value:
+        return None
+
+    issuer = urlsplit(settings.OAUTH2_PROVIDER["OIDC_ISS_ENDPOINT"])
+    target = urlsplit(value)
+
+    if (
+        target.scheme != issuer.scheme
+        or target.netloc.lower() != issuer.netloc.lower()
+        or target.path != "/o/authorize/"
+        or not target.query
+        or target.fragment
+        or target.username is not None
+        or target.password is not None
+    ):
+        return None
+
+    return value
 
 
 @extend_schema(
@@ -123,6 +167,14 @@ def get_frontend_url():
 @authentication_classes([])
 @permission_classes([AllowAny])
 def google_login(request):
+    oidc_return_to = get_oidc_authorize_return_to(
+        request.GET.get("next", "")
+    )
+    if oidc_return_to:
+        request.session["oidc_authorize_return_to"] = oidc_return_to
+    else:
+        request.session.pop("oidc_authorize_return_to", None)
+
     flow = Flow.from_client_config(
         {
             "web": {
@@ -270,9 +322,24 @@ def google_callback(request):
 
     request.session["authenticated_user"] = authenticated_user
 
+    
+
+    # Mark the Excel record as activated/provisioned if it exists
+    staging_record = ImportedCampEmail.objects.filter(email=email).first()
+    if staging_record and not staging_record.is_provisioned:
+        staging_record.is_provisioned = True
+        staging_record.save()
+
     # Clear the one-time OAuth state and PKCE verifier after success.
     request.session.pop("google_oauth_state", None)
     request.session.pop("google_code_verifier", None)
+
+    oidc_return_to = request.session.pop(
+        "oidc_authorize_return_to",
+        None,
+    )
+    if oidc_return_to:
+        return redirect(oidc_return_to)
 
     return redirect(
         f"{get_frontend_url()}/workspaces?login=success"
@@ -327,6 +394,9 @@ def manual_login(request):
     email = str(data.get("email") or "").strip().lower()
     password = str(data.get("password") or "")
     remember = data.get("remember", False)
+    oidc_return_to = get_oidc_authorize_return_to(
+        str(data.get("next") or "")
+    )
 
     if not email or not password:
         return JsonResponse(
@@ -342,7 +412,11 @@ def manual_login(request):
             status=400,
         )
 
-    if not is_greenhill_email(email):
+    is_local_test_user = (
+        settings.DEBUG and email == LOCAL_TEST_USER_EMAIL
+    )
+
+    if not is_greenhill_email(email) and not is_local_test_user:
         return JsonResponse(
             {
                 "authenticated": False,
@@ -397,13 +471,14 @@ def manual_login(request):
 
     request.session["authenticated_user"] = authenticated_user
 
-    return JsonResponse(
-        {
-            "authenticated": True,
-            "user": authenticated_user,
-        },
-        status=200,
-    )
+    response_data = {
+        "authenticated": True,
+        "user": authenticated_user,
+    }
+    if oidc_return_to:
+        response_data["next"] = oidc_return_to
+
+    return JsonResponse(response_data, status=200)
 
 
 @extend_schema(
@@ -476,6 +551,12 @@ def sign_out(request):
     )
 
 
+@require_GET
+def oidc_sign_out(request):
+    logout(request)
+    return redirect(settings.FRONTEND_URL)
+
+
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
@@ -499,3 +580,50 @@ def diagnostic_test_user(request):
         },
         status=200,
     )
+
+class BulkExcelUploadView(APIView):
+    """
+    API endpoint that accepts an uploaded Excel (.xlsx) file,
+    iterates over the active sheet, and populates the database table.
+    """
+    parser_classes = [MultiPartParser]
+
+    def post(self, request, format=None):
+        if 'file' not in request.data:
+            return JsonResponse({"error": "No file payload key discovered."}, status=400)
+        
+        excel_file = request.data['file']
+        
+        try:
+            # Load the binary sheet object into openpyxl
+            wb = openpyxl.load_workbook(excel_file, data_only=True, read_only=True)
+            sheet = wb.active
+            created_count = 0
+
+            # Step row by row starting at line 2 to bypass header titles
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                if not row or not row[0]:
+                    continue  # Safely skip blank lines or rows missing an email
+                
+                email = str(row[0]).strip().lower()
+                camp = str(row[1]).strip() if len(row) > 1 and row[1] else ""
+
+                # Check domain bounds before inserting into DB
+                if not email.endswith('@greenhillacademy.ac.ug'):
+                    continue
+
+                obj, created = ImportedCampEmail.objects.get_or_create(
+                    email=email,
+                    defaults={'camp_name': camp}
+                )
+                if created:
+                    created_count += 1
+
+            return JsonResponse({
+                "success": True, 
+                "message": f"Successfully parsed Excel workbook. Seeded {created_count} camp accounts."
+            }, status=201)
+            
+        except Exception as e:
+            return JsonResponse({"error": f"Excel stream parsing collapsed: {str(e)}"}, status=400)
+    

@@ -9,6 +9,7 @@ from drf_spectacular.views import (
 )
 
 from authentication import urls as authentication_urls
+from authentication.views import oidc_sign_out
 
 
 urlpatterns = [
@@ -27,6 +28,13 @@ urlpatterns = [
 
     # Existing authentication endpoints.
     path("auth/", include(authentication_urls.urlpatterns)),
+
+    # ISMP returns here after signing out; always send users to the auth login.
+    path(
+        "o/logout/",
+        oidc_sign_out,
+        name="oidc_sign_out",
+    ),
 
     # OAuth 2.0 / OpenID Connect endpoints.
     path(
