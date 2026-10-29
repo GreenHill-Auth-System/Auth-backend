@@ -9,7 +9,7 @@ from django.contrib.auth import (
     get_user_model,
     login,
     logout,
-)
+) 
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect
 
@@ -29,7 +29,7 @@ from google.oauth2 import id_token
 from google_auth_oauthlib.flow import Flow
 
 from authentication.domain_guard import is_greenhill_email
-
+from authentication.models import AllowedEmail
 
 if os.getenv("DJANGO_ENV") == "development":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
@@ -67,13 +67,23 @@ INITIAL_AUTHORIZED_SYSTEMS = [
 
 def get_user_access(email):
     """
-    Return the initial application access assigned to a user.
+    Return the role and systems assigned to a user.
 
-    The CEO receives access to all three systems.
-    Other GreenHill users can authenticate but receive no
-    system access until their permissions are assigned.
+    The AllowedEmail table is checked first. The hardcoded CEO is a
+    temporary fallback until the CEO has a row in the table.
     """
     normalized_email = (email or "").strip().lower()
+
+    entry = AllowedEmail.objects.filter(
+        email=normalized_email,
+        is_active=True,
+    ).first()
+
+    if entry:
+        return {
+            "role": entry.role,
+            "authorized_systems": list(entry.authorized_systems),
+        }
 
     if normalized_email == CEO_EMAIL:
         return {
