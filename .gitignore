@@ -10,3 +10,4 @@ credentials/
 
 # JWT signing keys
 keys/db.sqlite3
+db.sqlite3
