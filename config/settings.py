@@ -193,6 +193,7 @@ EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "http://localhost:5174",
     "https://greenhill-auth-frontend2.onrender.com",
 ]
 
@@ -207,9 +208,9 @@ CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
+    "http://localhost:5174",
     "https://greenhill-auth-frontend2.onrender.com",
 ]
-
 
 
 # SESSION AND COOKIE SECURITY
