@@ -3,6 +3,8 @@ import base64
 import hashlib
 import os
 import secrets
+from rest_framework.decorators import throttle_classes
+from .throttles import LoginRateThrottle
 
 from django.contrib.auth import (
     authenticate,
@@ -331,13 +333,13 @@ def google_callback(request):
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
+@throttle_classes([LoginRateThrottle])
 def manual_login(request):
     data = request.data
 
     email = str(data.get("email") or "").strip().lower()
     password = str(data.get("password") or "")
     remember = data.get("remember", False)
-
     if not email or not password:
         return JsonResponse(
             {
@@ -515,4 +517,4 @@ def diagnostic_test_user(request):
 def sign_out_redirect(request):
     """Sign out, then send the browser to the auth sign-in page."""
     logout(request)
-    return redirect(f"{get_frontend_url()}/")
+    return redirect(f"{get_frontend_url()}/")           
