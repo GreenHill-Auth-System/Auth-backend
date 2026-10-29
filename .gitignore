@@ -9,4 +9,4 @@ service-account*.json
 credentials/
 
 # JWT signing keys
-keys/
+keys/db.sqlite3
