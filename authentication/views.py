@@ -509,3 +509,10 @@ def diagnostic_test_user(request):
         },
         status=200,
     )
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def sign_out_redirect(request):
+    """Sign out, then send the browser to the auth sign-in page."""
+    logout(request)
+    return redirect(f"{get_frontend_url()}/")

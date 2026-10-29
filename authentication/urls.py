@@ -30,6 +30,11 @@ urlpatterns = [
         name="sign_out",
     ),
     path(
+        "logout-redirect/",
+        views.sign_out_redirect,
+        name="sign_out_redirect",
+    ),
+    path(
     "diagnostic/test-user/",
     views.diagnostic_test_user,
     name="diagnostic_test_user",
