@@ -198,7 +198,8 @@ CORS_ALLOWED_ORIGINS = [
     "https://165.232.50.141.sslip.io",
 ]
 
-CORS_ALLOW_CREDENTIALS = True
+
+SESSION_COOKIE_AGE = 60 * 60 * 8  # 8 hours
 
 
 
@@ -245,8 +246,10 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": (
         "drf_spectacular.openapi.AutoSchema"
     ),
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "10/minute",
+    },
 }
-
 
 
 # API DOCUMENTATION

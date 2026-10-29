@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.urls import path
 
 from . import views
@@ -30,8 +31,18 @@ urlpatterns = [
         name="sign_out",
     ),
     path(
-    "diagnostic/test-user/",
-    views.diagnostic_test_user,
-    name="diagnostic_test_user",
-),
+        "logout-redirect/",
+        views.sign_out_redirect,
+        name="sign_out_redirect",
+    ),
 ]
+
+# Diagnostic endpoint exists only in local development (DEBUG=true).
+if settings.DEBUG:
+    urlpatterns += [
+        path(
+            "diagnostic/test-user/",
+            views.diagnostic_test_user,
+            name="diagnostic_test_user",
+        ),
+    ]
