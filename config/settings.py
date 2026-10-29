@@ -195,6 +195,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:5174",
     "https://greenhill-auth-frontend2.onrender.com",
+    "https://165.232.50.141.sslip.io",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -210,6 +211,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:5174",
     "https://greenhill-auth-frontend2.onrender.com",
+    "https://165.232.50.141.sslip.io",
 ]
 
 
