@@ -171,19 +171,26 @@ sequenceDiagram
 ```
 
 Failure paths redirect to the frontend with an `error` query parameter rather
-than showing a Django error page:
+than showing a Django error page. No failure returns a bare `400` any more: a
+plain-text page stranded the browser on the backend host, explained nothing, and
+was indistinguishable from a broken site.
 
 | Condition | Result |
 | --- | --- |
-| `state` missing from session, or does not match `?state=` | `400` |
-| PKCE verifier missing from session | `400` |
-| Code exchange fails | `400` |
-| `id_token` verification fails | `400` |
+| `state` missing from session, or does not match `?state=` | redirect `/?error=oauth_state_missing` |
+| PKCE verifier missing from session | redirect `/?error=oauth_state_missing` |
+| Code exchange fails | redirect `/?error=oauth_token_exchange_failed` |
+| `id_token` verification fails | redirect `/?error=oauth_id_token_invalid` |
 | `email` is not `@greenhillacademy.ac.ug` | redirect `/?error=greenhill_account_required` |
 | `email_verified` is not `true` | redirect `/?error=email_not_verified` |
 | `hd` present but not `greenhillacademy.ac.ug` | redirect `/?error=wrong_hosted_domain` |
 | Google subject is already bound to another account | redirect `/?error=identity_conflict` |
 | Account exists but `is_active=False` | redirect `/?error=account_inactive` |
+
+Every reason is logged with a masked address (`tm***@greenhillacademy.ac.ug`),
+so "who was refused, and why" is answerable from the Render log alone. The login
+page renders a sentence for each code; an unrecognised code still shows a
+generic message instead of nothing.
 
 The one-time `google_oauth_state` and `google_code_verifier` are popped from the
 session on success so they cannot be replayed.
