@@ -302,6 +302,17 @@ CORS_ALLOWED_ORIGINS = [
 # stray slash can never take the whole project down again.
 CORS_ALLOWED_ORIGINS = [origin.rstrip("/") for origin in CORS_ALLOWED_ORIGINS]
 
+# The login call is `fetch(..., { credentials: 'include' })`, because the session
+# cookie has to travel with it. django-cors-headers defaults this to False, which
+# omits `Access-Control-Allow-Credentials`, and a browser then discards the
+# response *before* the app can read it. The symptom is not a 401 — `fetch`
+# rejects, so the login screen reports "Unable to connect to the authentication
+# server" even though the server answered correctly.
+#
+# Safe only because the origins above are explicit: with credentials enabled a
+# wildcard is no longer allowed, so this must never be paired with CORS_ALLOW_ALL_ORIGINS.
+CORS_ALLOW_CREDENTIALS = True
+
 
 SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", str(60 * 60 * 8)))  # 8 hours
 
