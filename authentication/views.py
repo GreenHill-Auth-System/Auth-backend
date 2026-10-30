@@ -6,6 +6,7 @@ import os
 import secrets
 from rest_framework.decorators import throttle_classes
 from .throttles import LoginRateThrottle
+from .audit import log_event
 
 from django.conf import settings
 from django.contrib.auth import (
@@ -654,6 +655,7 @@ def manual_login(request):
         )
 
     if user is None or not user.is_active:
+        log_event(request, "login_fail", email)
         return JsonResponse(
             {
                 "authenticated": False,
@@ -668,6 +670,9 @@ def manual_login(request):
         )
 
     login(request, user)
+    log_event(request, "login_ok", email)
+
+    
 
     if not remember:
         request.session.set_expiry(0)
@@ -1027,8 +1032,8 @@ def user_avatar(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def sign_out(request):
+    log_event(request, "logout", getattr(request._request.user, "email", ""))
     result = _end_session(request)
-
     return JsonResponse(
         {
             "authenticated": False,
@@ -1037,8 +1042,6 @@ def sign_out(request):
         },
         status=200,
     )
-
-
 @extend_schema(
     summary="Sign out of every browser",
     description=(
@@ -1084,6 +1087,8 @@ def sign_out_everywhere(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def sign_out_redirect(request):
+    """Sign out, then send the browser to the auth sign-in page."""
+    log_event(request, "logout", getattr(request._request.user, "email", ""))
     """Sign out over a plain link, then land somewhere useful.
 
     The three systems are separate origins, so none of them can read this
@@ -1153,7 +1158,6 @@ def _trusted_post_logout_hosts():
                 hosts.add(uri.split("://", 1)[-1].rstrip("/").split("/")[0])
 
     return hosts
-
 
 # ---------------------------------------------------------------------------
 # Session manager
@@ -1283,6 +1287,7 @@ def session_revoke_all(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def csrf_token(request):
+    return JsonResponse({"detail": "CSRF cookie set."}, status=200)           
     # The token is returned in the body as well as set as a cookie. The three
     # systems call this backend from a different origin, where JavaScript
     # cannot read the cookie at all, so being told the value here is the only
