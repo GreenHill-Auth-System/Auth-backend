@@ -615,6 +615,18 @@ Both cookie flags switch with `DEBUG`: `SameSite=Lax` + not secure locally,
 `SameSite=None` + `Secure` in production (required because the frontend and
 backend are different origins).
 
+`CORS_ALLOW_CREDENTIALS = True` is set too, and login does not work without it.
+Every sign-in call is `fetch(..., { credentials: 'include' })` because the
+session cookie has to travel with it, and a browser will not hand a credentialed
+response back to the app unless the server echoes
+`Access-Control-Allow-Credentials: true`. `django-cors-headers` defaults that to
+`False` and then sends *no* such header. The failure is deliberately deceptive:
+the server answers `200` or `403` correctly, but `fetch` rejects before the app
+can read the body, so the login screen reports "Unable to connect to the
+authentication server" — which sends you looking for a dead API that is
+perfectly healthy. Credentials may only be enabled alongside explicit origins,
+never with `CORS_ALLOW_ALL_ORIGINS`.
+
 > **No trailing slashes.** An origin is a scheme + host + port and nothing else.
 > `https://138.197.193.101/` makes `django-cors-headers` raise
 > `corsheaders.E014`, and that is a *system check error* — it aborts every
@@ -1000,6 +1012,7 @@ Implementation order agreed for the SSO work, completed in order.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-31 | **`CORS_ALLOW_CREDENTIALS = True`.** Login failed with "Unable to connect to the authentication server" against a completely healthy backend. The cause was not a network problem: `django-cors-headers` defaults `CORS_ALLOW_CREDENTIALS` to `False`, so no `Access-Control-Allow-Credentials` header was sent, and the browser discarded the response to the `credentials: 'include'` login POST before the app could read it. `fetch` rejected, landing in the generic `catch` that prints the connection message. Confirmed by preflight: `access-control-allow-origin` was present but `access-control-allow-credentials` was absent. |
 | 2026-10-31 | **`127.0.0.1` added to CORS and CSRF trusted origins.** Both lists held only `http://localhost:5173/5174`, but `Auth-frontend`'s Vite dev server binds `127.0.0.1:5174` explicitly and `vite.config.ts` proxies `/auth` to `127.0.0.1:8001`. A browser treats `localhost` and `127.0.0.1` as different origins, so the real dev origin was blocked and CSRF-checked endpoints rejected it. |
 | 2026-10-31 | **Remote PostgreSQL support.** `settings.py` now passes `OPTIONS: {"sslmode": ...}` and `CONN_MAX_AGE`. `DB_SSLMODE` defaults to `require` for any non-loopback `DB_HOST` and `disable` for `localhost`, because Render's external endpoint rejects plaintext connections with `FATAL: SSL/TLS required`. `require` encrypts without verifying the certificate. README documents the trap where Render's *display* name (`greenhill-auth-database`) is not the real `datname`, and warns that `manage.py test` will attempt `CREATE DATABASE` on production unless `DB_NAME` is blanked. |
 | 2026-10-31 | **`create_access_user` command.** Creates a Django account (with `/admin/` flags) and its `AllowedEmail` row in one command, generating a 24-character password that is printed once. Needed because `createsuperuser` refuses non-interactive use and never writes an `AllowedEmail` row — which meant a superuser who could open `/admin/` but whom EID, Procurement and Incident all rejected. Also fixes an unreachable repair branch: a row whose *username* matched the email but whose email was blank used to fall through to the "username clash" error instead of being adopted and repaired. 25 new tests; suite now 216. |
