@@ -1,10 +1,24 @@
-from django.conf import settings
+"""Authentication and single sign-on endpoints.
+
+Two kinds of route live here:
+
+* **Sign-in** -- start a Google sign-in, handle its callback, or authenticate
+  with an email and password.
+* **Session management** -- who am I, which browsers am I signed in on, and how
+  do I sign out of one, all, or everywhere.
+
+The OAuth 2.0 / OIDC endpoints the three systems talk to (``/o/authorize/``,
+``/o/token/``, ``/o/userinfo/``, ``/o/jwks/``, ...) are mounted under ``/o/``
+by the toolkit itself, not here.
+"""
+
 from django.urls import path
 
 from . import views
 
 
 urlpatterns = [
+    # ---- Sign-in -------------------------------------------------------
     path(
         "google/login/",
         views.google_login,
@@ -20,29 +34,57 @@ urlpatterns = [
         views.manual_login,
         name="manual_login",
     ),
+
+    # ---- Current identity ----------------------------------------------
     path(
         "me/",
         views.current_user,
         name="current_user",
     ),
+
+    # ---- Sign-out ------------------------------------------------------
     path(
         "logout/",
         views.sign_out,
         name="sign_out",
     ),
     path(
+        "logout-everywhere/",
+        views.sign_out_everywhere,
+        name="sign_out_everywhere",
+    ),
+    path(
         "logout-redirect/",
         views.sign_out_redirect,
         name="sign_out_redirect",
     ),
-]
 
-# Diagnostic endpoint exists only in local development (DEBUG=true).
-if settings.DEBUG:
-    urlpatterns += [
-        path(
-            "diagnostic/test-user/",
-            views.diagnostic_test_user,
-            name="diagnostic_test_user",
-        ),
-    ]
+    # ---- Session manager -----------------------------------------------
+    path(
+        "sessions/",
+        views.session_list,
+        name="session_list",
+    ),
+    path(
+        "sessions/revoke-others/",
+        views.session_revoke_others,
+        name="session_revoke_others",
+    ),
+    path(
+        "sessions/revoke-all/",
+        views.session_revoke_all,
+        name="session_revoke_all",
+    ),
+    path(
+        "sessions/<int:session_id>/revoke/",
+        views.session_revoke,
+        name="session_revoke",
+    ),
+
+    # ---- Frontend bootstrap --------------------------------------------
+    path(
+        "csrf/",
+        views.csrf_token,
+        name="csrf_token",
+    ),
+]
