@@ -723,9 +723,7 @@ def current_user(request):
 @permission_classes([AllowAny])
 def sign_out(request):
     log_event(request, "logout", getattr(request._request.user, "email", ""))
-    logout(request)
     result = _end_session(request)
-
     return JsonResponse(
         {
             "authenticated": False,
@@ -734,8 +732,6 @@ def sign_out(request):
         },
         status=200,
     )
-
-
 @extend_schema(
     summary="Sign out of every browser",
     description=(
@@ -782,11 +778,8 @@ def sign_out_everywhere(request):
 def sign_out_redirect(request):
     """Sign out, then send the browser to the auth sign-in page."""
     log_event(request, "logout", getattr(request._request.user, "email", ""))
-    logout(request)
-    return redirect(f"{get_frontend_url()}/")
     _end_session(request)
     return redirect(f"{get_frontend_url()}/")
-
 
 # ---------------------------------------------------------------------------
 # Session manager
