@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "render migrate",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"manage.py",
+				"migrate",
+				"--no-input"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		}
+	]
+}
