@@ -283,8 +283,14 @@ EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 # Allow requests from the frontend applications listed here.
 
 CORS_ALLOWED_ORIGINS = [
+    # Both spellings of loopback: a browser treats http://localhost:5174 and
+    # http://127.0.0.1:5174 as different origins, and Auth-frontend's Vite
+    # dev server binds 127.0.0.1 explicitly, so listing only `localhost`
+    # leaves the real dev origin blocked.
     "http://localhost:5173",
     "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
     "https://greenhill-auth-frontend2.onrender.com",
     "https://165.232.50.141.sslip.io",
     "https://138.197.193.101/",
@@ -323,6 +329,8 @@ SESSION_ENGINE = "django.contrib.sessions.backends.db"
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
     "https://greenhill-auth-frontend2.onrender.com",
     "https://165.232.50.141.sslip.io",
     "https://138.197.193.101",
