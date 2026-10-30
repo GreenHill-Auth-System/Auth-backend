@@ -482,7 +482,7 @@ def current_user(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def sign_out(request):
-    log_event(request, "logout", getattr(request.user, "email", ""))
+    log_event(request, "logout", getattr(request._request.user, "email", ""))
     logout(request)
 
     return JsonResponse(
