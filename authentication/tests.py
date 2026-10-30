@@ -1,4 +1,3 @@
-
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -6,33 +5,34 @@ from django.test import TestCase
 from django.urls import reverse
 
 from authentication.domain_guard import is_greenhill_email
+from authentication.models import AllowedEmail
 
 
-CEO_EMAIL = "refactory@greenhillacademy.ac.ug"
+GREENHILL_EMAIL = "employee@greenhillacademy.ac.ug"
+GREENHILL_NAME = "GreenHill Employee"
+GREENHILL_SUB = "google-sub-employee"
 
-ALL_SYSTEMS = [
-    "EID",
-    "Procurement",
-    "Incident Service Management",
-]
+
+def greenhill_claims(**overrides):
+    """A verified Google id_token payload for a GreenHill Workspace account."""
+    claims = {
+        "email": GREENHILL_EMAIL,
+        "name": GREENHILL_NAME,
+        "sub": GREENHILL_SUB,
+        "email_verified": True,
+        "hd": "greenhillacademy.ac.ug",
+    }
+    claims.update(overrides)
+    return claims
 
 
 def expected_user(email, name):
-    """Return the expected role and system access for an account."""
-    normalized_email = (email or "").strip().lower()
-
-    if normalized_email == CEO_EMAIL:
-        role = "CEO"
-        authorized_systems = ALL_SYSTEMS.copy()
-    else:
-        role = "Greenhill User"
-        authorized_systems = []
-
+    """Return the expected response for an account with no AllowedEmail row."""
     return {
-        "email": normalized_email,
+        "email": (email or "").strip().lower(),
         "name": name,
-        "role": role,
-        "authorized_systems": authorized_systems,
+        "role": "Greenhill User",
+        "authorized_systems": [],
     }
 
 
@@ -248,10 +248,7 @@ class GoogleCallbackDomainGuardTests(TestCase):
         mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
-        mock_verify_token.return_value = {
-            "email": "employee@greenhillacademy.ac.ug",
-            "name": "GreenHill Employee",
-        }
+        mock_verify_token.return_value = greenhill_claims()
 
         session = self.client.session
         session["google_oauth_state"] = "test-state"
@@ -300,10 +297,7 @@ class GoogleAuthenticationApiResponseTests(TestCase):
         mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
-        mock_verify_token.return_value = {
-            "email": "employee@greenhillacademy.ac.ug",
-            "name": "GreenHill Employee",
-        }
+        mock_verify_token.return_value = greenhill_claims()
 
         session = self.client.session
         session["google_oauth_state"] = "test-state"
@@ -506,10 +500,7 @@ class GoogleCallbackLocalUserTests(TestCase):
         mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
-        mock_verify_token.return_value = {
-            "email": "employee@greenhillacademy.ac.ug",
-            "name": "GreenHill Employee",
-        }
+        mock_verify_token.return_value = greenhill_claims()
 
         session = self.client.session
         session["google_oauth_state"] = "test-state"
@@ -581,10 +572,7 @@ class GoogleCallbackLocalUserTests(TestCase):
         mock_flow = mock_flow_class.from_client_config.return_value
         mock_flow.credentials.id_token = "mock-id-token"
 
-        mock_verify_token.return_value = {
-            "email": "employee@greenhillacademy.ac.ug",
-            "name": "GreenHill Employee",
-        }
+        mock_verify_token.return_value = greenhill_claims()
 
         session = self.client.session
         session["google_oauth_state"] = "test-state"
@@ -789,13 +777,17 @@ class ManualLoginTests(TestCase):
             "GreenHill Employee",
         )
 
+        body = response.json()
+        redirect_to = body.pop("redirect_to")
+
         self.assertEqual(
-            response.json(),
+            body,
             {
                 "authenticated": True,
                 "user": user_data,
             },
         )
+        self.assertTrue(redirect_to.endswith("/workspaces?login=success"))
         self.assertEqual(
             int(self.client.session["_auth_user_id"]),
             user.id,
@@ -826,9 +818,19 @@ class ManualLoginTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["authenticated"])
 
-    def test_ceo_receives_access_to_all_three_systems(self):
+    def test_user_with_all_systems_in_allowed_email_gets_them_on_login(self):
         User = get_user_model()
-        email = CEO_EMAIL
+        email = "refactory@greenhillacademy.ac.ug"
+
+        AllowedEmail.objects.create(
+            email=email,
+            role=AllowedEmail.Role.CEO,
+            authorized_systems=[
+                AllowedEmail.System.EID,
+                AllowedEmail.System.PROCUREMENT,
+                AllowedEmail.System.INCIDENT,
+            ],
+        )
 
         user = User.objects.create_user(
             username=email,
@@ -849,15 +851,28 @@ class ManualLoginTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
 
-        user_data = expected_user(email, "Refactory")
+        user_data = {
+            "email": email,
+            "name": "Refactory",
+            "role": AllowedEmail.Role.CEO,
+            "authorized_systems": [
+                AllowedEmail.System.EID,
+                AllowedEmail.System.PROCUREMENT,
+                AllowedEmail.System.INCIDENT,
+            ],
+        }
+
+        body = response.json()
+        redirect_to = body.pop("redirect_to")
 
         self.assertEqual(
-            response.json(),
+            body,
             {
                 "authenticated": True,
                 "user": user_data,
             },
         )
+        self.assertTrue(redirect_to.endswith("/workspaces?login=success"))
         self.assertEqual(
             int(self.client.session["_auth_user_id"]),
             user.id,
