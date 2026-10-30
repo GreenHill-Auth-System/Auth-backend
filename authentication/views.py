@@ -1,11 +1,13 @@
 
 import base64
 import hashlib
+import logging
 import os
 import secrets
 from rest_framework.decorators import throttle_classes
 from .throttles import LoginRateThrottle
 
+from django.conf import settings
 from django.contrib.auth import (
     authenticate,
     get_user_model,
@@ -14,6 +16,7 @@ from django.contrib.auth import (
 )
 from django.core.exceptions import DisallowedHost
 from django.http import HttpResponse, JsonResponse
+from django.middleware.csrf import get_token
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -35,13 +38,15 @@ from google.auth.transport import requests
 from google.oauth2 import id_token
 from google_auth_oauthlib.flow import Flow
 
+from oauth2_provider.models import get_application_model
+
 from authentication.access import get_user_access
 from authentication.domain_guard import (
     GREENHILL_EMAIL_HINT,
     is_greenhill_email,
     is_valid_greenhill_email,
 )
-from authentication.models import UserSession
+from authentication.models import UserProfile, UserSession, UserSettings
 from authentication.sessions import (
     active_sessions,
     revoke_all_sessions,
@@ -60,6 +65,9 @@ from authentication.users import (
 
 if os.getenv("DJANGO_ENV") == "development":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
+
+logger = logging.getLogger(__name__)
 
 
 GOOGLE_SCOPES = [
@@ -683,6 +691,24 @@ def current_user(request):
 
     authenticated_user["role"] = access["role"]
     authenticated_user["authorized_systems"] = access["authorized_systems"]
+
+    # Name comes from `auth.User`, the same row the OIDC claims read, so a
+    # name edited in the profile page shows up here, in the tokens, and in
+    # every system -- instead of only in the browser that edited it.
+    authenticated_user["first_name"] = request.user.first_name
+    authenticated_user["last_name"] = request.user.last_name
+    authenticated_user["name"] = (
+        request.user.get_full_name().strip()
+        or authenticated_user.get("name")
+        or request.user.email
+    )
+
+    picture = _avatar_url(request, request.user)
+    if picture:
+        authenticated_user["picture"] = picture
+    else:
+        authenticated_user.pop("picture", None)
+
     request.session["authenticated_user"] = authenticated_user
 
     return JsonResponse(
@@ -691,6 +717,240 @@ def current_user(request):
             "user": authenticated_user,
         }
     )
+
+
+def _avatar_url(request, user):
+    """Absolute URL of this person's avatar, or ``""`` when they have none.
+
+    Returned as a URL rather than inline data so the identity response stays
+    small: ``/auth/me/`` is called on every page load of all three systems, and
+    a base64 avatar would make each of those responses megabytes wide.
+
+    The ``v`` query parameter is the avatar's last modification time, so a
+    browser that has cached the old image fetches the new one the moment it
+    changes -- without it, a replaced avatar can stay stale for as long as the
+    cache entry lives.
+    """
+    profile = getattr(user, "greenhill_profile", None)
+
+    if profile is None or not profile.has_avatar:
+        return ""
+
+    return request.build_absolute_uri(
+        f"/auth/avatar/?v={int(profile.updated_at.timestamp())}"
+    )
+
+
+def _profile_for(user):
+    """The profile row for this account, created on first use."""
+    profile, _created = UserProfile.objects.get_or_create(user=user)
+    return profile
+
+
+def _settings_for(user):
+    """The settings row for this account, created with defaults on first use."""
+    settings_row, _created = UserSettings.objects.get_or_create(user=user)
+    return settings_row
+
+
+def _settings_payload(settings_row):
+    return {
+        "in_app_notifications": settings_row.in_app_notifications,
+        "email_notifications": settings_row.email_notifications,
+        "browser_notifications": settings_row.browser_notifications,
+        "appearance": settings_row.appearance,
+        "time_zone": settings_row.time_zone,
+        "reduce_motion": settings_row.reduce_motion,
+    }
+
+
+def _profile_payload(request, user):
+    profile = _profile_for(user)
+    return {
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        # Read-only: the address is the account's identity and the key
+        # `AllowedEmail` grants access by, so it is not editable here.
+        "work_email": user.email,
+        "role": get_user_access(user.email)["role"],
+        "avatar_data": profile.avatar_data,
+        "picture": _avatar_url(request, user),
+    }
+
+
+@extend_schema(
+    summary="Get or update the signed-in person's profile",
+    description=(
+        "The profile is shared by all three systems: a name saved here is "
+        "written to the account itself, so it appears in the OIDC claims and "
+        "in every system immediately. The work email is read-only -- it is "
+        "the identity the account was granted access under."
+    ),
+    responses={
+        200: OpenApiResponse(description="The profile."),
+        401: OpenApiResponse(description="The user is not authenticated."),
+        413: OpenApiResponse(description="The avatar is too large."),
+    },
+)
+@api_view(["GET", "POST"])
+def user_profile(request):
+    if not request.user.is_authenticated:
+        return JsonResponse(
+            {"authenticated": False},
+            status=401,
+        )
+
+    user = request.user
+
+    if request.method == "GET":
+        return JsonResponse(_profile_payload(request, user))
+
+    data = request.data or {}
+    profile = _profile_for(user)
+
+    # Name is written to `auth.User`, not to `UserProfile`, because that is
+    # where the OIDC claims read it from. Storing it twice would let the two
+    # copies disagree.
+    for field, limit in (("first_name", 150), ("last_name", 150)):
+        if field in data:
+            value = str(data.get(field) or "").strip()
+            if len(value) > limit:
+                return JsonResponse(
+                    {"detail": f"{field} must be {limit} characters or fewer."},
+                    status=400,
+                )
+            setattr(user, field, value)
+
+    user.save(update_fields=["first_name", "last_name"])
+
+    if "avatar_data" in data:
+        try:
+            profile.set_avatar_data(data.get("avatar_data"))
+        except ValueError as error:
+            if "too large" in str(error):
+                return JsonResponse(
+                    {"detail": "The avatar image is too large."},
+                    status=413,
+                )
+            return JsonResponse({"detail": str(error)}, status=400)
+
+        profile.save(update_fields=["avatar_data", "updated_at"])
+
+    # Keep the cached session copy in step so the next page load -- or the
+    # next system that asks -- sees the new name without a re-login.
+    cached = request.session.get("authenticated_user")
+    if cached:
+        cached["name"] = (
+            user.get_full_name().strip() or cached.get("name") or user.email
+        )
+        cached["first_name"] = user.first_name
+        cached["last_name"] = user.last_name
+        request.session["authenticated_user"] = cached
+
+    return JsonResponse(_profile_payload(request, user))
+
+
+@extend_schema(
+    summary="Get or update the signed-in person's preferences",
+    description=(
+        "Stored per account rather than in the browser, so the same "
+        "preferences apply in every system and on every device."
+    ),
+    responses={
+        200: OpenApiResponse(description="The settings."),
+        401: OpenApiResponse(description="The user is not authenticated."),
+    },
+)
+@api_view(["GET", "POST"])
+def user_settings(request):
+    if not request.user.is_authenticated:
+        return JsonResponse(
+            {"authenticated": False},
+            status=401,
+        )
+
+    settings_row = _settings_for(request.user)
+
+    if request.method == "GET":
+        return JsonResponse(_settings_payload(settings_row))
+
+    data = request.data or {}
+
+    for field in (
+        "in_app_notifications",
+        "email_notifications",
+        "browser_notifications",
+        "reduce_motion",
+    ):
+        if field in data:
+            setattr(settings_row, field, bool(data.get(field)))
+
+    if "appearance" in data:
+        value = str(data.get("appearance") or "").strip()
+        valid = {choice.value for choice in UserSettings.Appearance}
+        if value not in valid:
+            return JsonResponse(
+                {"detail": f"appearance must be one of {sorted(valid)}."},
+                status=400,
+            )
+        settings_row.appearance = value
+
+    if "time_zone" in data:
+        value = str(data.get("time_zone") or "").strip()
+        if len(value) > 64:
+            return JsonResponse(
+                {"detail": "time_zone must be 64 characters or fewer."},
+                status=400,
+            )
+        settings_row.time_zone = value
+
+    settings_row.save()
+
+    return JsonResponse(_settings_payload(settings_row))
+
+
+@extend_schema(
+    summary="The signed-in person's avatar image",
+    description=(
+        "The raw image bytes behind the ``picture`` URL, so the three systems "
+        "can render the same photo without each storing a copy."
+    ),
+    responses={
+        200: OpenApiResponse(description="The image bytes."),
+        404: OpenApiResponse(description="This account has no avatar."),
+    },
+)
+@api_view(["GET"])
+def user_avatar(request):
+    if not request.user.is_authenticated:
+        return HttpResponse(status=404)
+
+    profile = getattr(request.user, "greenhill_profile", None)
+
+    if profile is None or not profile.has_avatar:
+        return HttpResponse(status=404)
+
+    # "data:image/png;base64,AAAA..." -> ("image/png", "AAAA...")
+    header, _, encoded = profile.avatar_data.partition(",")
+    content_type = header[len("data:"):].split(";")[0] or "application/octet-stream"
+
+    try:
+        image = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        # A stored value we cannot decode is a data problem, not a client
+        # error; report it as "no avatar" so the frontend draws initials.
+        logger.warning("undecodable avatar for user %s", request.user.pk)
+        return HttpResponse(status=404)
+
+    response = HttpResponse(image, content_type=content_type)
+
+    # Private: the image belongs to one account, so no shared cache may keep
+    # a copy. The short lifetime allows a browser to reuse it while a single
+    # page is open, which is the only reuse that matters here.
+    response["Cache-Control"] = "private, max-age=300"
+
+    return response
+
 
 
 @extend_schema(
@@ -763,7 +1023,8 @@ def sign_out_everywhere(request):
     summary="Sign out and return to the sign-in page",
     description=(
         "Browser-friendly version of sign out: ends the session, revokes "
-        "tokens, then redirects to the frontend."
+        "tokens, then redirects to the frontend. Pass ``next`` to return to "
+        "the sign-in page of the system the user signed out from."
     ),
     responses={
         302: OpenApiResponse(description="Redirects to the frontend."),
@@ -773,8 +1034,75 @@ def sign_out_everywhere(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def sign_out_redirect(request):
+    """Sign out over a plain link, then land somewhere useful.
+
+    The three systems are separate origins, so none of them can read this
+    service's response or share its cookie. A system that wants "Sign out" to
+    end the single sign-on session therefore has to navigate the browser here,
+    which makes this a top-level GET and means it cannot carry a CSRF token --
+    hence no DRF authentication.
+
+    ``next`` is only honoured when it points at a relying party's registered
+    frontend and is one of the origins this service has been told to trust.
+    Logout links are trivially forgeable, so an unchecked ``next`` here would
+    be an open redirect on the sign-out path -- exactly where a phisher wants
+    one, because the user is already primed to believe they are being returned
+    to a familiar login screen.
+    """
+    target = _post_logout_target(request)
     _end_session(request)
-    return redirect(f"{get_frontend_url()}/")
+
+    return redirect(target or f"{get_frontend_url()}/")
+
+
+def _post_logout_target(request):
+    """Return an absolute ``next`` URL to send the browser to, or ``""``.
+
+    Only an absolute URL on a trusted, registered origin qualifies; anything
+    else is dropped and the caller falls back to the frontend root. A relative
+    path is refused on purpose: it would resolve against *this* service, which
+    serves no frontend routes, so the user would get a 404 immediately after
+    signing out.
+    """
+    target = (request.GET.get("next") or "").strip()
+    if not target:
+        return ""
+
+    if "://" not in target:
+        logger.warning("refused relative post-logout redirect %r", target[:200])
+        return ""
+
+    if not url_has_allowed_host_and_scheme(
+        target,
+        allowed_hosts=_trusted_post_logout_hosts(),
+        require_https=request.is_secure(),
+    ):
+        logger.warning("refused post-logout redirect to %r", target[:200])
+        return ""
+
+    return target
+
+
+def _trusted_post_logout_hosts():
+    """Hosts a sign-out may bounce the browser to.
+
+    Two sources, both authoritative for "somewhere we are willing to send a
+    person": this service's own configured frontend and CORS origins, plus the
+    ``post_logout_redirect_uris`` each relying party registered. The second is
+    the same data ``/o/logout/`` already trusts for exactly this purpose, so a
+    new system only has to be seeded -- it does not need a deploy here.
+    """
+    hosts = {get_frontend_url().split("://", 1)[-1].rstrip("/")}
+
+    for origin in settings.CORS_ALLOWED_ORIGINS:
+        hosts.add(origin.split("://", 1)[-1].rstrip("/"))
+
+    for application in get_application_model().objects.all():
+        for uri in (application.post_logout_redirect_uris or "").split():
+            if "://" in uri:
+                hosts.add(uri.split("://", 1)[-1].rstrip("/").split("/")[0])
+
+    return hosts
 
 
 # ---------------------------------------------------------------------------
@@ -905,4 +1233,17 @@ def session_revoke_all(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def csrf_token(request):
-    return JsonResponse({"detail": "CSRF cookie set."}, status=200)           
+    # The token is returned in the body as well as set as a cookie. The three
+    # systems call this backend from a different origin, where JavaScript
+    # cannot read the cookie at all, so being told the value here is the only
+    # way they can echo it in the ``X-CSRFToken`` header. It is not a secret
+    # leak: django-cors-headers only lets the origins listed in
+    # ``CORS_ALLOWED_ORIGINS`` read this response, and any other page gets the
+    # normal CORS refusal instead of the body.
+    return JsonResponse(
+        {
+            "detail": "CSRF cookie set.",
+            "csrfToken": get_token(request),
+        },
+        status=200,
+    )           

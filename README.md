@@ -289,6 +289,8 @@ immediately without forcing a re-login.
 | `auth.User` (Django built-in) | Identity record. `username` is set to the email on creation. |
 | `GoogleIdentity` | The verified Google account behind a user: `google_sub` (unique), `email_verified`, `hosted_domain`, `google_email`. |
 | `AllowedEmail` | The access policy (see above). |
+| `UserProfile` | Avatar for one account (`avatar_data`, a data URL). Created on first use. |
+| `UserSettings` | Notifications, appearance, time zone and reduced motion for one account. Created on first use. |
 | `UserSession` | One row per signed-in **browser**, so a user can list and kill their own devices. |
 | `oauth2_provider.Application` | One row per relying party (EID, PMS, ISMP) — created by `seed_oauth_clients`. |
 | `oauth2_provider.Grant` | A user's consent for a client + scope set. |
@@ -388,8 +390,11 @@ those queries without rewriting the provider.
 | `GET` | `/auth/google/login/` | Begin Google OAuth (or `/o/authorize/` if already signed in). Accepts `?next=`. |
 | `GET` | `/auth/google/callback/` | Google redirect target. Establishes the session, then resumes `next`. |
 | `POST` | `/auth/login/` | Email + password login (throttled 10/min). Accepts `?next=`. |
-| `GET` | `/auth/me/` | Current user + freshly computed access. `401` if anonymous. |
-| `GET` | `/auth/csrf/` | Sets the `csrftoken` cookie. Call before any `POST`. |
+| `GET` | `/auth/me/` | Current user + freshly computed access, plus `first_name`, `last_name` and `picture`. `401` if anonymous. |
+| `GET` | `/auth/csrf/` | Sets the `csrftoken` cookie **and** returns the token in the body as `csrfToken`. Call before any `POST`. |
+| `GET`/`POST` | `/auth/profile/` | The account's shared profile. `POST` accepts `first_name`, `last_name`, `avatar_data`. |
+| `GET`/`POST` | `/auth/settings/` | The account's shared preferences. |
+| `GET` | `/auth/avatar/` | The raw avatar image bytes. `404` when there is none. |
 | `POST` | `/auth/logout/` | Ends **this** browser's session and revokes its tokens. |
 | `POST` | `/auth/logout-everywhere/` | Ends **every** session for the user and revokes all tokens. |
 | `GET` | `/auth/logout-redirect/` | Same as logout, then redirects to the frontend sign-in page. |
@@ -428,6 +433,63 @@ A session row looks like:
 > `revoke-others` is the "sign out everywhere else" button users expect after
 > changing a password. `revoke-all` is the panic button. Both return how many
 > sessions, access tokens and refresh tokens were destroyed.
+
+### Profile, avatar and preferences
+
+One account has exactly one profile, because it lives on the account and not in
+a browser:
+
+```json
+// GET /auth/profile/
+{
+  "first_name": "Ada",
+  "last_name": "Lovelace",
+  "work_email": "ada@greenhillacademy.ac.ug",
+  "role": "CEO",
+  "avatar_data": "data:image/png;base64,…",
+  "picture": "https://greenhill-auth-backend2.onrender.com/auth/avatar/?v=1761822071"
+}
+```
+
+```json
+// GET /auth/settings/
+{
+  "in_app_notifications": true,
+  "email_notifications": true,
+  "browser_notifications": false,
+  "appearance": "Light",
+  "time_zone": "Africa / Kampala",
+  "reduce_motion": false
+}
+```
+
+Three decisions behind that shape:
+
+* **The name is written to `auth.User`, not to `UserProfile`.** The OIDC claims
+  (`name`, `given_name`, `family_name`) are built from `auth.User`, so a name
+  saved here is what the three systems already receive in their tokens. Storing
+  a second copy would let the two disagree.
+* **`work_email` is read-only.** It is the identity the account was granted
+  access under (`AllowedEmail`) and the key Google's `sub` is bound to; letting
+  a profile form change it would detach the account from its own policy row.
+* **`picture` is a URL, not the image.** `/auth/me/` is called on every page load
+  of all three systems, so inlining a base64 photo would put megabytes in each
+  identity response. The `v` parameter is the avatar's last-modified timestamp,
+  which is what stops a replaced photo from staying stale in a browser cache.
+
+The avatar is stored as a `data:image/…;base64,…` string rather than a file on
+local disk, because a Render container's filesystem does not survive a redeploy
+— a photo written to `MEDIA_ROOT` would vanish on the next deploy. `POST
+/auth/profile/` refuses anything that is not an image data URL (`400`) or is
+larger than `UserProfile.MAX_AVATAR_BYTES` (`413`).
+
+Preferences moved off `localStorage` for the same reason the profile did:
+`localStorage` is scoped to one origin, so the same person's settings were
+invisible to the other two systems and to a private window.
+
+Both `POST` endpoints need the CSRF header, so a cross-origin frontend must call
+`GET /auth/csrf/` first and echo `csrfToken` from the **body** — it cannot read
+the cookie, because it is on a different origin.
 
 ### OIDC provider endpoints (`/o/`) — provided by django-oauth-toolkit
 
@@ -607,9 +669,17 @@ openssl genrsa -out oidc.pem 2048
 http://localhost:5173
 http://localhost:5174
 https://greenhill-auth-frontend2.onrender.com
+https://greenhill-eid-frontend.onrender.com
+https://pms-frontend-4fm8.onrender.com
 https://165.232.50.141.sslip.io
 https://138.197.193.101
 ```
+
+Each system's own frontend origin has to be here, not just the auth app's. The
+three systems are separate origins, so a `fetch(..., { credentials: 'include' })`
+from EID or PMS back to this backend is a cross-origin request: without the entry
+the browser discards the response and the request looks like a network failure,
+even though the server answered `200`.
 
 Both cookie flags switch with `DEBUG`: `SameSite=Lax` + not secure locally,
 `SameSite=None` + `Secure` in production (required because the frontend and
