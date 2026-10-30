@@ -75,7 +75,7 @@ RELYING_PARTIES = (
     ),
     RelyingParty(
         key="procurement",
-        name="GreenHill Procurement (PMS)",
+        name="GreenHill PMS",
         system=AllowedEmail.System.PROCUREMENT,
         env_prefix="PROCUREMENT",
     ),

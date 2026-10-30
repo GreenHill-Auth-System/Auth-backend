@@ -27,6 +27,24 @@ def _access_for(request):
     return get_user_access(request.user.email)
 
 
+def _picture_url(request):
+    """Absolute URL of this person's avatar, or ``""`` when they have none.
+
+    Deliberately mirrors ``views._avatar_url`` rather than importing it: the
+    view module pulls in every endpoint in the project, and this needs one
+    string. Both read the same ``UserProfile`` row, so they cannot disagree
+    about *whether* an avatar exists -- only about the unchanged URL shape.
+    """
+    profile = getattr(request.user, "greenhill_profile", None)
+
+    if profile is None or not profile.has_avatar:
+        return ""
+
+    return request.build_absolute_uri(
+        f"/auth/avatar/?v={int(profile.updated_at.timestamp())}"
+    )
+
+
 class GreenHillOAuth2Validator(OAuth2Validator):
     oidc_claim_scope = dict(OAuth2Validator.oidc_claim_scope)
 
@@ -36,6 +54,7 @@ class GreenHillOAuth2Validator(OAuth2Validator):
         "family_name": "profile",
         "preferred_username": "profile",
         "email": "email",
+        "picture": "profile",
         "role": "profile",
         "authorized_systems": "profile",
     })
@@ -104,6 +123,7 @@ class GreenHillOAuth2Validator(OAuth2Validator):
             "family_name": lambda request: request.user.last_name,
             "preferred_username": lambda request: request.user.username,
             "email": lambda request: request.user.email,
+            "picture": _picture_url,
             "role": lambda request: _access_for(request)["role"],
             "authorized_systems": lambda request: _access_for(request)[
                 "authorized_systems"
@@ -118,6 +138,7 @@ class GreenHillOAuth2Validator(OAuth2Validator):
             "given_name",
             "family_name",
             "preferred_username",
+            "picture",
             "role",
             "authorized_systems",
         })
