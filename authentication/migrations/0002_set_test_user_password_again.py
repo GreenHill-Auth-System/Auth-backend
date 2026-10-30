@@ -1,37 +1,15 @@
+"""Neutralised: duplicate of 0001, which reset a user's password from an env var.
+
+See ``0001_set_test_user_password`` for the rationale. The body is now a no-op;
+``RunPython`` does not affect migration state, so this is safe for databases that
+already applied the original.
+"""
+
 from django.db import migrations
-from django.contrib.auth.hashers import make_password
-import os
 
 
-def create_test_user(apps, schema_editor):
-    User = apps.get_model("auth", "User")
-
-    email = "refactory@greenhillacademy.ac.ug"
-    password = os.getenv("TEST_USER_PASSWORD")
-
-    if not password:
-        return
-
-    user, created = User.objects.get_or_create(
-        email=email,
-        defaults={
-            "username": email,
-            "is_active": True,
-        },
-    )
-
-    user.username = email
-    user.password = make_password(password)
-    user.is_active = True
-    user.save()
-
-
-def reverse_test_user(apps, schema_editor):
-    User = apps.get_model("auth", "User")
-
-    User.objects.filter(
-        email="refactory@greenhillacademy.ac.ug"
-    ).delete()
+def noop(apps, schema_editor):
+    """Intentionally empty. See the module docstring."""
 
 
 class Migration(migrations.Migration):
@@ -41,8 +19,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(
-            create_test_user,
-            reverse_test_user,
-        ),
+        migrations.RunPython(noop, noop),
     ]
