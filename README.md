@@ -664,6 +664,62 @@ All runtime dependencies are pinned in `requirements.txt` (including
 > DEBUG=True
 > ```
 
+### Connecting to the production database (Render)
+
+`.env` can point this app at a different database than the local SQLite file.
+Set the `DB_*` values and `settings.py` switches engines automatically — there is
+nothing to edit in code:
+
+```
+DB_NAME=greenhill_auth_h572      # the real database name, NOT the display name
+DB_USER=...
+DB_PASSWORD=...
+DB_HOST=....ohio-postgres.render.com   # the EXTERNAL hostname, from a laptop
+DB_PORT=5432
+DB_SSLMODE=require               # optional; this is the default for remote hosts
+DB_CONN_MAX_AGE=60               # optional; seconds to reuse a connection
+```
+
+Comment out or leave **all** of them empty and you are back on `db.sqlite3`.
+
+Three things bite people here:
+
+**1. Render's display name is not the database name.** Render labels the instance
+`greenhill-auth-database`, but the server's real `datname` is something like
+`greenhill_auth_h572`. Using the display name fails with
+`FATAL: database "greenhill-auth-database" does not exist`. To read the real
+name, connect to the `postgres` maintenance database and list what exists:
+
+```powershell
+$env:PGPASSWORD='<password>'
+psql -h <host> -U <user> -d postgres -c "SELECT datname FROM pg_database;"
+```
+
+**2. Render's external endpoint refuses plaintext connections.** Without `sslmode`
+the driver fails with `FATAL: SSL/TLS required`. `settings.py` therefore defaults
+`DB_SSLMODE` to `require` whenever `DB_HOST` is not loopback, and to `disable`
+otherwise, so a local Postgres keeps working untouched. Note that `require`
+encrypts but does **not** verify the certificate; use `verify-full` (and Render's
+CA bundle) if you need verification.
+
+**3. Use the external hostname, and only from outside Render.** The external
+hostname resolves anywhere; the internal one resolves only inside Render's
+network.
+
+> **`manage.py test` will try to create a test database on Render.** Django
+> names it `test_<DB_NAME>` on the same server, so with the production values in
+> `.env` the suite attempts `CREATE DATABASE` on production. Blank the name for
+> that one command:
+>
+> ```powershell
+> $env:DB_NAME=""; python manage.py test authentication; Remove-Item Env:DB_NAME
+> ```
+>
+> The same warning applies to every other management command: with `DB_NAME` set,
+> `migrate`, `grant_access` and `create_access_user` all write to production.
+> Check `settings.DATABASES['default']['NAME']` before running anything you would
+> not want to run against live data.
+
 ### Provisioning a GreenHill staff member
 
 A person needs **two** things: an account (`auth.User`) and permission
@@ -788,6 +844,15 @@ key:
 
 ```powershell
 $env:SECRET_KEY='local-test-only'; python manage.py test authentication
+```
+
+If your `.env` points at a remote database (see
+[Connecting to the production database](#connecting-to-the-production-database-render)),
+blank `DB_NAME` so the suite builds its throwaway database in SQLite instead of
+asking Render to create one:
+
+```powershell
+$env:DB_NAME=""; python manage.py test authentication; Remove-Item Env:DB_NAME
 ```
 
 ---
@@ -935,6 +1000,7 @@ Implementation order agreed for the SSO work, completed in order.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-31 | **Remote PostgreSQL support.** `settings.py` now passes `OPTIONS: {"sslmode": ...}` and `CONN_MAX_AGE`. `DB_SSLMODE` defaults to `require` for any non-loopback `DB_HOST` and `disable` for `localhost`, because Render's external endpoint rejects plaintext connections with `FATAL: SSL/TLS required`. `require` encrypts without verifying the certificate. README documents the trap where Render's *display* name (`greenhill-auth-database`) is not the real `datname`, and warns that `manage.py test` will attempt `CREATE DATABASE` on production unless `DB_NAME` is blanked. |
 | 2026-10-31 | **`create_access_user` command.** Creates a Django account (with `/admin/` flags) and its `AllowedEmail` row in one command, generating a 24-character password that is printed once. Needed because `createsuperuser` refuses non-interactive use and never writes an `AllowedEmail` row — which meant a superuser who could open `/admin/` but whom EID, Procurement and Incident all rejected. Also fixes an unreachable repair branch: a row whose *username* matched the email but whose email was blank used to fall through to the "username clash" error instead of being adopted and repaired. 25 new tests; suite now 216. |
 | 2026-10-31 | **Suite made `.env`-independent.** `test_unconfigured_party_is_skipped_with_a_warning` assumed the two non-EID relying parties had no redirect URIs in the environment. Once a real `.env` existed — which ships `http://localhost:5174/auth/callback` and `http://localhost:5175/auth/callback` — all three parties were configured and the test failed. It now blanks `PROCUREMENT_*` / `INCIDENT_*` explicitly, matching what `test_raises_when_nothing_is_configured` already did. |
 | 2026-10-30 | **`.env` bootstrap + clean API docs.** Added `generate_env.py`, which turns `.env.example` into a working `.env` and fills in `SECRET_KEY` and `OIDC_RSA_PRIVATE_KEY`. The session and sign-out endpoints now declare `request=None` and real response serializers, which removes every `drf_spectacular.W002` — `check --deploy` is down from 11 issues to 4, all of them deliberate env-gated ones. `manage.py spectacular --validate` reports 0 warnings, 0 errors. |
