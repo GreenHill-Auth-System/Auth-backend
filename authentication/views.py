@@ -175,6 +175,19 @@ def get_frontend_url():
     ).rstrip("/")
 
 
+def _mask_email(email):
+    """``ab***@example.com`` -- enough to identify an account in a log line.
+
+    Sign-in rejections are logged so an administrator can tell "wrong Google
+    account" from "deactivated account", but a log is not the place to keep a
+    complete staff address book.
+    """
+    local, _, domain = (email or "").partition("@")
+    if not domain:
+        return "***"
+    return f"{local[:2]}***@{domain}"
+
+
 def _request_host(request):
     """This request's host, even when Django does not recognise it.
 
@@ -419,6 +432,7 @@ def google_callback(request):
             code_verifier=code_verifier,
         )
     except Exception:
+        logger.exception("google token exchange failed")
         return HttpResponse(
             "Google token exchange failed.",
             status=400,
@@ -433,6 +447,7 @@ def google_callback(request):
             os.getenv("GOOGLE_CLIENT_ID"),
         )
     except Exception:
+        logger.exception("google id token verification failed")
         return HttpResponse(
             "Google ID token verification failed.",
             status=400,
@@ -442,6 +457,12 @@ def google_callback(request):
     name = google_user.get("name") or ""
 
     if not is_greenhill_email(email):
+        # The browser only ever learns the reason code, so the log is the only
+        # place an administrator can find out *which* account was turned away.
+        logger.warning(
+            "google sign-in rejected for non-GreenHill address %s",
+            _mask_email(email),
+        )
         return redirect(
             f"{get_frontend_url()}/?error=greenhill_account_required"
         )
@@ -451,6 +472,13 @@ def google_callback(request):
     # suffix would trust an unverified address asserted by a Workspace admin.
     claims_ok, claim_error = google_claims_are_trustworthy(google_user)
     if not claims_ok:
+        logger.warning(
+            "google sign-in rejected for %s: %s (hd=%r verified=%r)",
+            _mask_email(email),
+            claim_error,
+            google_user.get("hd"),
+            google_user.get("email_verified"),
+        )
         return redirect(
             f"{get_frontend_url()}/?error={claim_error}"
         )
@@ -461,12 +489,21 @@ def google_callback(request):
     # already bound to somebody else must never leave a stray account behind.
     try:
         user, _created = resolve_google_user(google_user)
-    except ValueError:
+    except ValueError as exc:
+        logger.warning(
+            "google sign-in conflict for %s: %s",
+            _mask_email(email),
+            exc,
+        )
         return redirect(
             f"{get_frontend_url()}/?error=identity_conflict"
         )
 
     if not user.is_active:
+        logger.warning(
+            "google sign-in refused for inactive account %s",
+            _mask_email(email),
+        )
         return redirect(
             f"{get_frontend_url()}/?error=account_inactive"
         )
