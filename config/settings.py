@@ -136,6 +136,21 @@ WSGI_APPLICATION = "config.wsgi.application"
 
 # Configure these variables in the Render dashboard.
 # Use the connection details from your new PostgreSQL DB.
+#
+# Render's *external* database endpoint refuses plaintext connections, so a
+# local `runserver` against production needs TLS. The internal hostname
+# (same-region traffic) accepts TLS too, so `require` is the safe default for
+# anything that is not loopback. Set DB_SSLMODE=disable to talk to a local
+# Postgres that has SSL switched off.
+#
+# NOTE: `require` encrypts but does not verify the server certificate. Use
+# `verify-full` once you have Render's CA certificate to pin against.
+
+DB_SSLMODE = os.getenv("DB_SSLMODE", "").strip() or (
+    "disable"
+    if (os.getenv("DB_HOST") or "").strip() in {"", "localhost", "127.0.0.1"}
+    else "require"
+)
 
 if os.getenv("DB_NAME"):
     DATABASES = {
@@ -146,6 +161,10 @@ if os.getenv("DB_NAME"):
             "PASSWORD": os.getenv("DB_PASSWORD"),
             "HOST": os.getenv("DB_HOST"),
             "PORT": os.getenv("DB_PORT", "5432"),
+            "OPTIONS": {"sslmode": DB_SSLMODE},
+            # Reuse connections for 60s instead of paying a ~200ms TLS
+            # handshake on every request to a database in another region.
+            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "60")),
         }
     }
 else:
