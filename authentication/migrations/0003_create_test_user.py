@@ -1,37 +1,22 @@
+"""Neutralised: this migration created a user from an environment variable.
+
+The original version read ``TEST_USER_PASSWORD`` and created or overwrote the
+hardcoded account ``refactory@greenhillacademy.ac.ug``. Besides being a
+credential backdoor, it made the schema history depend on an environment
+variable — a fresh ``migrate`` in production with that variable set would reset
+the CEO's password.
+
+The body is now a no-op. ``RunPython`` contributes nothing to migration state,
+so this is safe for databases that already applied the original.
+
+Use ``python manage.py createsuperuser`` or the Django admin to create accounts.
+"""
+
 from django.db import migrations
-from django.contrib.auth.hashers import make_password
-import os
 
 
-def create_test_user(apps, schema_editor):
-    User = apps.get_model("auth", "User")
-
-    email = "refactory@greenhillacademy.ac.ug"
-    password = os.getenv("TEST_USER_PASSWORD")
-
-    if not password:
-        return
-
-    user, created = User.objects.get_or_create(
-        email=email,
-        defaults={
-            "username": email,
-            "is_active": True,
-        },
-    )
-
-    user.username = email
-    user.password = make_password(password)
-    user.is_active = True
-    user.save()
-
-
-def reverse_create_test_user(apps, schema_editor):
-    User = apps.get_model("auth", "User")
-
-    User.objects.filter(
-        email="refactory@greenhillacademy.ac.ug"
-    ).delete()
+def noop(apps, schema_editor):
+    """Intentionally empty. See the module docstring."""
 
 
 class Migration(migrations.Migration):
@@ -41,8 +26,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(
-            create_test_user,
-            reverse_create_test_user,
-        ),
+        migrations.RunPython(noop, noop),
     ]
