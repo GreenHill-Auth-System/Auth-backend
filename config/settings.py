@@ -1,6 +1,7 @@
 
 from pathlib import Path
 import os
+import sys
 
 from dotenv import load_dotenv
 
@@ -23,6 +24,13 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
 DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+
+# Local development and the test suite need *some* key: Django refuses to sign
+# cookies and messages with an empty one. This fallback is deliberately obvious
+# and only applies when DEBUG is on or a test run is in progress, so production
+# (DEBUG=False, no test command) still fails loudly if the variable is missing.
+if not SECRET_KEY and (DEBUG or "test" in sys.argv):
+    SECRET_KEY = "dev-insecure-secret-key-greenhill-local-only"
 
 ALLOWED_HOSTS = [
     host.strip()
@@ -72,6 +80,12 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+
+    # Keeps the session manager's device list in step with real sessions.
+    # Must come after AuthenticationMiddleware (it needs request.user) and
+    # before MessageMiddleware, which is irrelevant but documents intent.
+    "authentication.middleware.UserSessionMiddleware",
+
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -82,6 +96,22 @@ MIDDLEWARE = [
 
 
 ROOT_URLCONF = "config.urls"
+
+# ---------------------------------------------------------------------------
+# Where an unauthenticated browser is sent.
+#
+# django-oauth-toolkit's /o/authorize/ view applies @login_required. Pointing
+# LOGIN_URL at the Google sign-in start means an app can simply redirect the
+# browser to /o/authorize/... and the whole round trip -- sign in, then return
+# to the authorization request -- happens without the app doing anything.
+# Django appends ?next=<the full authorize URL> automatically.
+# ---------------------------------------------------------------------------
+
+LOGIN_URL = "/auth/google/login/"
+LOGIN_REDIRECT_URL = "/auth/me/"
+
+# The `next` round trip only ever returns to this host.
+LOGIN_URL_ALLOWED_HOSTS = ALLOWED_HOSTS
 
 TEMPLATES = [
     {
@@ -106,6 +136,21 @@ WSGI_APPLICATION = "config.wsgi.application"
 
 # Configure these variables in the Render dashboard.
 # Use the connection details from your new PostgreSQL DB.
+#
+# Render's *external* database endpoint refuses plaintext connections, so a
+# local `runserver` against production needs TLS. The internal hostname
+# (same-region traffic) accepts TLS too, so `require` is the safe default for
+# anything that is not loopback. Set DB_SSLMODE=disable to talk to a local
+# Postgres that has SSL switched off.
+#
+# NOTE: `require` encrypts but does not verify the server certificate. Use
+# `verify-full` once you have Render's CA certificate to pin against.
+
+DB_SSLMODE = os.getenv("DB_SSLMODE", "").strip() or (
+    "disable"
+    if (os.getenv("DB_HOST") or "").strip() in {"", "localhost", "127.0.0.1"}
+    else "require"
+)
 
 if os.getenv("DB_NAME"):
     DATABASES = {
@@ -116,6 +161,10 @@ if os.getenv("DB_NAME"):
             "PASSWORD": os.getenv("DB_PASSWORD"),
             "HOST": os.getenv("DB_HOST"),
             "PORT": os.getenv("DB_PORT", "5432"),
+            "OPTIONS": {"sslmode": DB_SSLMODE},
+            # Reuse connections for 60s instead of paying a ~200ms TLS
+            # handshake on every request to a database in another region.
+            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "60")),
         }
     }
 else:
@@ -128,8 +177,50 @@ else:
 
 
 
-# PASSWORD VALIDATION
+# CACHE
 
+# Used by DRF throttling (the login rate limit) and by the session manager.
+#
+# With no REDIS_URL the default LocMemCache is per-process, which means a rate
+# limit of "10/minute" is really "10/minute per gunicorn worker". That is
+# acceptable locally but too loose in production: set REDIS_URL there and
+# every worker shares one counter.
+#
+# The Redis backend needs the `redis` package. If REDIS_URL is set but the
+# package is missing, fall back to LocMemCache rather than crashing the whole
+# site on boot.
+
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "greenhill-auth",
+    }
+}
+
+if REDIS_URL:
+    try:
+        import redis  # noqa: F401
+    except ImportError:
+        import warnings
+
+        warnings.warn(
+            "REDIS_URL is set but the 'redis' package is not installed; "
+            "falling back to a per-process cache.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    else:
+        CACHES = {
+            "default": {
+                "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                "LOCATION": REDIS_URL,
+            }
+        }
+
+
+# PASSWORD VALIDATION
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -192,17 +283,44 @@ EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 # Allow requests from the frontend applications listed here.
 
 CORS_ALLOWED_ORIGINS = [
+    # Both spellings of loopback: a browser treats http://localhost:5174 and
+    # http://127.0.0.1:5174 as different origins, and Auth-frontend's Vite
+    # dev server binds 127.0.0.1 explicitly, so listing only `localhost`
+    # leaves the real dev origin blocked.
     "http://localhost:5173",
     "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
     "https://greenhill-auth-frontend2.onrender.com",
     "https://165.232.50.141.sslip.io",
+    "https://138.197.193.101/",
 ]
 
 # Needed so browsers send the login cookie on cross-origin requests.
 CORS_ALLOW_CREDENTIALS = True
 
+# An origin never carries a path, and a trailing slash makes django-cors-headers
+# raise `corsheaders.E014`, which is a *system check error*: it aborts every
+# management command, including `manage.py test`. Normalising here means one
+# stray slash can never take the whole project down again.
+CORS_ALLOWED_ORIGINS = [origin.rstrip("/") for origin in CORS_ALLOWED_ORIGINS]
 
-SESSION_COOKIE_AGE = 60 * 60 * 8  # 8 hours
+
+SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", str(60 * 60 * 8)))  # 8 hours
+
+# `login()` already cycles the key; HttpOnly keeps it away from JavaScript in
+# the three frontends, which have no reason to read it.
+SESSION_COOKIE_HTTPONLY = True
+
+# How often (in seconds) the session manager rewrites `last_seen_at` for a
+# browser. One write per request would mean a database write on every page
+# load across all three systems.
+SESSION_TOUCH_INTERVAL = int(os.getenv("SESSION_TOUCH_INTERVAL", "60"))
+
+# Only the database backend keeps sessions server-side. The cookie and cached
+# backends store the session data in the browser, which would make "revoke
+# this device" impossible.
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
 
 
 
@@ -214,9 +332,16 @@ SESSION_COOKIE_AGE = 60 * 60 * 8  # 8 hours
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
     "https://greenhill-auth-frontend2.onrender.com",
     "https://165.232.50.141.sslip.io",
+    "https://138.197.193.101",
 ]
+
+# Same normalisation as CORS above: Django rejects a trusted origin that has a
+# trailing slash, and by default silently ignores nothing — the check fails.
+CSRF_TRUSTED_ORIGINS = [origin.rstrip("/") for origin in CSRF_TRUSTED_ORIGINS]
 
 
 # SESSION AND COOKIE SECURITY
@@ -239,6 +364,31 @@ SECURE_PROXY_SSL_HEADER = (
     "HTTP_X_FORWARDED_PROTO",
     "https",
 )
+
+
+# TRANSPORT SECURITY
+
+# These are opt-in (default off) so that local runs, the test suite and the
+# Django test client keep working over plain http. A production deployment
+# MUST set SECURE_SSL_REDIRECT=True and SECURE_HSTS_SECONDS=31536000.
+#
+# `manage.py check --deploy` warns about every one of these that is left at its
+# insecure default, which is the intended reminder.
+
+SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "False").lower() == "true"
+
+SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "0"))
+
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
+
+# Do not let a browser guess a content type and execute something unexpected.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
+SECURE_REFERRER_POLICY = "same-origin"
+
+# The IdP never needs to be framed by anyone, not even the three systems.
+X_FRAME_OPTIONS = "DENY"
 
 
 
@@ -277,12 +427,22 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 # GreenHill Single Sign-On (OAuth 2.0 + OpenID Connect)
+#
+# Every value that matters is set explicitly rather than inherited, because
+# several django-oauth-toolkit 3.4 defaults are unsafe for a production SSO
+# provider:
+#   REFRESH_TOKEN_EXPIRE_SECONDS   -> None (refresh tokens never expire)
+#   REFRESH_TOKEN_REUSE_PROTECTION -> False
+#   ID_TOKEN_EXPIRE_SECONDS        -> 36000 (10 hours)
+#   OIDC_RP_INITIATED_LOGOUT_ENABLED -> False
+#   ALLOWED_REDIRECT_URI_SCHEMES   -> ["http", "https"]
 OAUTH2_PROVIDER = {
 
-    
     "OAUTH2_VALIDATOR_CLASS": (
         "authentication.oauth_validators.GreenHillOAuth2Validator"
     ),
+
+    # ---- Discovery identity ----
 
     "OIDC_ENABLED": True,
     "OIDC_RSA_PRIVATE_KEY": os.environ.get(
@@ -292,8 +452,65 @@ OAUTH2_PROVIDER = {
         "OIDC_ISS_ENDPOINT",
         "https://greenhill-auth-backend2.onrender.com/o",
     ),
+
+    # ---- Token lifetimes ----
+
+    # Short-lived access token, long-lived refresh token: a relying party can
+    # keep the user signed in without holding a long-lived bearer credential.
     "ACCESS_TOKEN_EXPIRE_SECONDS": 3600,
+    "ID_TOKEN_EXPIRE_SECONDS": 3600,
+    "REFRESH_TOKEN_EXPIRE_SECONDS": 60 * 60 * 24 * 14,
+
     "ROTATE_REFRESH_TOKEN": True,
+    # Rotating without reuse detection buys nothing: a stolen refresh token
+    # would simply rotate alongside the real one. With this on, replaying a
+    # used token invalidates the entire token family.
+    "REFRESH_TOKEN_REUSE_PROTECTION": True,
+
+    # ---- Authorization code flow hardening ----
+
+    "PKCE_REQUIRED": True,
+
+    # Only https in production. http stays available under DEBUG so localhost
+    # frontends keep working.
+    "ALLOWED_REDIRECT_URI_SCHEMES": (
+        ["http", "https"] if DEBUG else ["https"]
+    ),
+
+    # "auto" suppresses the consent screen for clients flagged
+    # skip_authorization. All three systems are first-party, so the prompt is
+    # friction without security benefit.
+    "REQUEST_APPROVAL_PROMPT": "auto",
+
+    # ---- RP-initiated logout ----
+
+    "OIDC_RP_INITIATED_LOGOUT_ENABLED": True,
+    "OIDC_RP_INITIATED_LOGOUT_DELETE_TOKENS": True,
+    "OIDC_RP_INITIATED_LOGOUT_ALWAYS_PROMPT": True,
+
+    # ---- RFC 9700 / OAuth 2.0 Security BCP ----
+
+    # Behaviour gates: the insecure request is rejected instead of warned about.
+    # None of these grants are used by this service or by the three systems.
+    "COMPLIANT_BCP_RFC9700_IMPLICIT_GRANT": True,
+    "COMPLIANT_BCP_RFC9700_PASSWORD_GRANT": True,
+    "COMPLIANT_BCP_RFC9700_PKCE_METHOD": True,
+    "COMPLIANT_BCP_RFC9700_AUTHZ_RESPONSE_ISS": True,
+
+    # Configuration gates: promote RFC 9700 violations of the covered settings
+    # from `check --deploy` warnings to errors.
+    "COMPLIANT_BCP_RFC9700_REFRESH_TOKEN": True,
+    "COMPLIANT_BCP_RFC9700_REDIRECT_URI_SCHEME": True,
+    "COMPLIANT_BCP_RFC9700_REDIRECT_URI_MATCHING": True,
+    "COMPLIANT_BCP_RFC9700_PKCE_REQUIRED": True,
+
+    # Deliberately NOT enabled yet, because their exact runtime effect has not
+    # been reviewed against the frontends:
+    #   COMPLIANT_BCP_RFC9700_ACCESS_TOKEN_TRANSPORT
+    #       would reject bearer tokens supplied outside the Authorization header
+    #   COMPLIANT_BCP_RFC9700_TOKEN_STORAGE
+    #       constrains how tokens are persisted
+
     "SCOPES": {
         "openid": "Authenticate users",
         "profile": "Read basic profile information",

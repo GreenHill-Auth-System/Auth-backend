@@ -1,7 +1,7 @@
 from django.test import TestCase
 
+from .access import get_user_access
 from .models import AllowedEmail
-from .views import get_user_access
 
 
 class GetUserAccessTests(TestCase):
