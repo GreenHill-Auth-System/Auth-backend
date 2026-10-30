@@ -198,6 +198,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://165.232.50.141.sslip.io",
 ]
 
+# Needed so browsers send the login cookie on cross-origin requests.
+CORS_ALLOW_CREDENTIALS = True
+
 
 SESSION_COOKIE_AGE = 60 * 60 * 8  # 8 hours
 
