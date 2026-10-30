@@ -841,6 +841,39 @@ environment. A party with no redirect URIs is skipped with a warning, so you can
 configure EID first and add the others later. Paste the printed secrets into your
 env — they are hashed in the database and cannot be shown again.
 
+The command matches existing rows **by name**, and it overwrites
+`redirect_uris` wholesale rather than merging. Two consequences worth knowing:
+
+* A client renamed in the admin is invisible to the command — it creates a
+  second row instead of updating the first, and you end up with a duplicate
+  whose `client_id` the live system is not sending.
+* A row created by hand is only adopted once its name exactly matches the
+  `RelyingParty.name` in `clients.py`.
+
+### Why first-party systems must skip the consent screen
+
+`seed_oauth_clients` writes `skip_authorization=True` for every client, because
+these three systems *are* the organisation — there is nobody to ask. This is a
+database column, not a setting, so:
+
+* it is not carried by a deployment, and `manage.py check` cannot see it;
+* an `Application` created through `/admin/` or the shell defaults to `False`,
+  and the only symptom is a consent screen named after the client, listing the
+  scopes, before the user reaches the system they clicked.
+
+`OAUTH2_PROVIDER["REQUEST_APPROVAL_PROMPT"]` is `"auto"` precisely so this column
+is the single thing that decides. If each system starts asking for permission,
+check the rows first:
+
+```python
+from oauth2_provider.models import Application
+Application.objects.filter(skip_authorization=False)   # should be empty
+```
+
+A `False` here also means no `Grant` row is created until the user approves, so
+the request never reaches the system's callback and the card appears to do
+nothing.
+
 ### Tests
 
 ```powershell
@@ -1012,6 +1045,7 @@ Implementation order agreed for the SSO work, completed in order.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-31 | **`skip_authorization` set to `True` on all five OAuth clients.** Every row had it `False`, so each system opened with an "Authorize GreenHill PMS Production?" consent screen listing the requested scopes. `seed_oauth_clients` has always written `True` for first-party clients; the existing rows predate that behaviour and were never re-seeded. The flag lives in the database, not in code, so a deployment does **not** fix it and `manage.py check` cannot see it — the symptom is purely a UI prompt. Verified after the change: all three systems now answer `/o/authorize/` with an immediate `302` to their own callback carrying a `code`, no interstitial. |
 | 2026-10-31 | **`CORS_ALLOW_CREDENTIALS = True`.** Login failed with "Unable to connect to the authentication server" against a completely healthy backend. The cause was not a network problem: `django-cors-headers` defaults `CORS_ALLOW_CREDENTIALS` to `False`, so no `Access-Control-Allow-Credentials` header was sent, and the browser discarded the response to the `credentials: 'include'` login POST before the app could read it. `fetch` rejected, landing in the generic `catch` that prints the connection message. Confirmed by preflight: `access-control-allow-origin` was present but `access-control-allow-credentials` was absent. |
 | 2026-10-31 | **`127.0.0.1` added to CORS and CSRF trusted origins.** Both lists held only `http://localhost:5173/5174`, but `Auth-frontend`'s Vite dev server binds `127.0.0.1:5174` explicitly and `vite.config.ts` proxies `/auth` to `127.0.0.1:8001`. A browser treats `localhost` and `127.0.0.1` as different origins, so the real dev origin was blocked and CSRF-checked endpoints rejected it. |
 | 2026-10-31 | **Remote PostgreSQL support.** `settings.py` now passes `OPTIONS: {"sslmode": ...}` and `CONN_MAX_AGE`. `DB_SSLMODE` defaults to `require` for any non-loopback `DB_HOST` and `disable` for `localhost`, because Render's external endpoint rejects plaintext connections with `FATAL: SSL/TLS required`. `require` encrypts without verifying the certificate. README documents the trap where Render's *display* name (`greenhill-auth-database`) is not the real `datname`, and warns that `manage.py test` will attempt `CREATE DATABASE` on production unless `DB_NAME` is blanked. |
