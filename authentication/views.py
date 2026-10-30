@@ -5,6 +5,7 @@ import os
 import secrets
 from rest_framework.decorators import throttle_classes
 from .throttles import LoginRateThrottle
+from .audit import log_event
 
 from django.contrib.auth import (
     authenticate,
@@ -375,6 +376,7 @@ def manual_login(request):
     )
 
     if user is None or not user.is_active:
+        log_event(request, "login_fail", email)
         return JsonResponse(
             {
                 "authenticated": False,
@@ -389,6 +391,9 @@ def manual_login(request):
         )
 
     login(request, user)
+    log_event(request, "login_ok", email)
+
+    
 
     if not remember:
         request.session.set_expiry(0)
@@ -477,6 +482,7 @@ def current_user(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def sign_out(request):
+    log_event(request, "logout", getattr(request.user, "email", ""))
     logout(request)
 
     return JsonResponse(
@@ -516,5 +522,6 @@ def diagnostic_test_user(request):
 @permission_classes([AllowAny])
 def sign_out_redirect(request):
     """Sign out, then send the browser to the auth sign-in page."""
+    log_event(request, "logout", getattr(request._request.user, "email", ""))
     logout(request)
-    return redirect(f"{get_frontend_url()}/")           
+    return redirect(f"{get_frontend_url()}/")
