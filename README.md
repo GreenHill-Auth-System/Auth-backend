@@ -171,19 +171,26 @@ sequenceDiagram
 ```
 
 Failure paths redirect to the frontend with an `error` query parameter rather
-than showing a Django error page:
+than showing a Django error page. No failure returns a bare `400` any more: a
+plain-text page stranded the browser on the backend host, explained nothing, and
+was indistinguishable from a broken site.
 
 | Condition | Result |
 | --- | --- |
-| `state` missing from session, or does not match `?state=` | `400` |
-| PKCE verifier missing from session | `400` |
-| Code exchange fails | `400` |
-| `id_token` verification fails | `400` |
+| `state` missing from session, or does not match `?state=` | redirect `/?error=oauth_state_missing` |
+| PKCE verifier missing from session | redirect `/?error=oauth_state_missing` |
+| Code exchange fails | redirect `/?error=oauth_token_exchange_failed` |
+| `id_token` verification fails | redirect `/?error=oauth_id_token_invalid` |
 | `email` is not `@greenhillacademy.ac.ug` | redirect `/?error=greenhill_account_required` |
 | `email_verified` is not `true` | redirect `/?error=email_not_verified` |
 | `hd` present but not `greenhillacademy.ac.ug` | redirect `/?error=wrong_hosted_domain` |
 | Google subject is already bound to another account | redirect `/?error=identity_conflict` |
 | Account exists but `is_active=False` | redirect `/?error=account_inactive` |
+
+Every reason is logged with a masked address (`tm***@greenhillacademy.ac.ug`),
+so "who was refused, and why" is answerable from the Render log alone. The login
+page renders a sentence for each code; an unrecognised code still shows a
+generic message instead of nothing.
 
 The one-time `google_oauth_state` and `google_code_verifier` are popped from the
 session on success so they cannot be replayed.
@@ -289,6 +296,8 @@ immediately without forcing a re-login.
 | `auth.User` (Django built-in) | Identity record. `username` is set to the email on creation. |
 | `GoogleIdentity` | The verified Google account behind a user: `google_sub` (unique), `email_verified`, `hosted_domain`, `google_email`. |
 | `AllowedEmail` | The access policy (see above). |
+| `UserProfile` | Avatar for one account (`avatar_data`, a data URL). Created on first use. |
+| `UserSettings` | Notifications, appearance, time zone and reduced motion for one account. Created on first use. |
 | `UserSession` | One row per signed-in **browser**, so a user can list and kill their own devices. |
 | `oauth2_provider.Application` | One row per relying party (EID, PMS, ISMP) — created by `seed_oauth_clients`. |
 | `oauth2_provider.Grant` | A user's consent for a client + scope set. |
@@ -388,8 +397,11 @@ those queries without rewriting the provider.
 | `GET` | `/auth/google/login/` | Begin Google OAuth (or `/o/authorize/` if already signed in). Accepts `?next=`. |
 | `GET` | `/auth/google/callback/` | Google redirect target. Establishes the session, then resumes `next`. |
 | `POST` | `/auth/login/` | Email + password login (throttled 10/min). Accepts `?next=`. |
-| `GET` | `/auth/me/` | Current user + freshly computed access. `401` if anonymous. |
-| `GET` | `/auth/csrf/` | Sets the `csrftoken` cookie. Call before any `POST`. |
+| `GET` | `/auth/me/` | Current user + freshly computed access, plus `first_name`, `last_name` and `picture`. `401` if anonymous. |
+| `GET` | `/auth/csrf/` | Sets the `csrftoken` cookie **and** returns the token in the body as `csrfToken`. Call before any `POST`. |
+| `GET`/`POST` | `/auth/profile/` | The account's shared profile. `POST` accepts `first_name`, `last_name`, `avatar_data`. |
+| `GET`/`POST` | `/auth/settings/` | The account's shared preferences. |
+| `GET` | `/auth/avatar/` | The raw avatar image bytes. `404` when there is none. |
 | `POST` | `/auth/logout/` | Ends **this** browser's session and revokes its tokens. |
 | `POST` | `/auth/logout-everywhere/` | Ends **every** session for the user and revokes all tokens. |
 | `GET` | `/auth/logout-redirect/` | Same as logout, then redirects to the frontend sign-in page. |
@@ -428,6 +440,63 @@ A session row looks like:
 > `revoke-others` is the "sign out everywhere else" button users expect after
 > changing a password. `revoke-all` is the panic button. Both return how many
 > sessions, access tokens and refresh tokens were destroyed.
+
+### Profile, avatar and preferences
+
+One account has exactly one profile, because it lives on the account and not in
+a browser:
+
+```json
+// GET /auth/profile/
+{
+  "first_name": "Ada",
+  "last_name": "Lovelace",
+  "work_email": "ada@greenhillacademy.ac.ug",
+  "role": "CEO",
+  "avatar_data": "data:image/png;base64,…",
+  "picture": "https://greenhill-auth-backend2.onrender.com/auth/avatar/?v=1761822071"
+}
+```
+
+```json
+// GET /auth/settings/
+{
+  "in_app_notifications": true,
+  "email_notifications": true,
+  "browser_notifications": false,
+  "appearance": "Light",
+  "time_zone": "Africa / Kampala",
+  "reduce_motion": false
+}
+```
+
+Three decisions behind that shape:
+
+* **The name is written to `auth.User`, not to `UserProfile`.** The OIDC claims
+  (`name`, `given_name`, `family_name`) are built from `auth.User`, so a name
+  saved here is what the three systems already receive in their tokens. Storing
+  a second copy would let the two disagree.
+* **`work_email` is read-only.** It is the identity the account was granted
+  access under (`AllowedEmail`) and the key Google's `sub` is bound to; letting
+  a profile form change it would detach the account from its own policy row.
+* **`picture` is a URL, not the image.** `/auth/me/` is called on every page load
+  of all three systems, so inlining a base64 photo would put megabytes in each
+  identity response. The `v` parameter is the avatar's last-modified timestamp,
+  which is what stops a replaced photo from staying stale in a browser cache.
+
+The avatar is stored as a `data:image/…;base64,…` string rather than a file on
+local disk, because a Render container's filesystem does not survive a redeploy
+— a photo written to `MEDIA_ROOT` would vanish on the next deploy. `POST
+/auth/profile/` refuses anything that is not an image data URL (`400`) or is
+larger than `UserProfile.MAX_AVATAR_BYTES` (`413`).
+
+Preferences moved off `localStorage` for the same reason the profile did:
+`localStorage` is scoped to one origin, so the same person's settings were
+invisible to the other two systems and to a private window.
+
+Both `POST` endpoints need the CSRF header, so a cross-origin frontend must call
+`GET /auth/csrf/` first and echo `csrfToken` from the **body** — it cannot read
+the cookie, because it is on a different origin.
 
 ### OIDC provider endpoints (`/o/`) — provided by django-oauth-toolkit
 
@@ -607,13 +676,33 @@ openssl genrsa -out oidc.pem 2048
 http://localhost:5173
 http://localhost:5174
 https://greenhill-auth-frontend2.onrender.com
+https://greenhill-eid-frontend.onrender.com
+https://pms-frontend-4fm8.onrender.com
 https://165.232.50.141.sslip.io
 https://138.197.193.101
 ```
 
+Each system's own frontend origin has to be here, not just the auth app's. The
+three systems are separate origins, so a `fetch(..., { credentials: 'include' })`
+from EID or PMS back to this backend is a cross-origin request: without the entry
+the browser discards the response and the request looks like a network failure,
+even though the server answered `200`.
+
 Both cookie flags switch with `DEBUG`: `SameSite=Lax` + not secure locally,
 `SameSite=None` + `Secure` in production (required because the frontend and
 backend are different origins).
+
+`CORS_ALLOW_CREDENTIALS = True` is set too, and login does not work without it.
+Every sign-in call is `fetch(..., { credentials: 'include' })` because the
+session cookie has to travel with it, and a browser will not hand a credentialed
+response back to the app unless the server echoes
+`Access-Control-Allow-Credentials: true`. `django-cors-headers` defaults that to
+`False` and then sends *no* such header. The failure is deliberately deceptive:
+the server answers `200` or `403` correctly, but `fetch` rejects before the app
+can read the body, so the login screen reports "Unable to connect to the
+authentication server" — which sends you looking for a dead API that is
+perfectly healthy. Credentials may only be enabled alongside explicit origins,
+never with `CORS_ALLOW_ALL_ORIGINS`.
 
 > **No trailing slashes.** An origin is a scheme + host + port and nothing else.
 > `https://138.197.193.101/` makes `django-cors-headers` raise
@@ -829,6 +918,39 @@ environment. A party with no redirect URIs is skipped with a warning, so you can
 configure EID first and add the others later. Paste the printed secrets into your
 env — they are hashed in the database and cannot be shown again.
 
+The command matches existing rows **by name**, and it overwrites
+`redirect_uris` wholesale rather than merging. Two consequences worth knowing:
+
+* A client renamed in the admin is invisible to the command — it creates a
+  second row instead of updating the first, and you end up with a duplicate
+  whose `client_id` the live system is not sending.
+* A row created by hand is only adopted once its name exactly matches the
+  `RelyingParty.name` in `clients.py`.
+
+### Why first-party systems must skip the consent screen
+
+`seed_oauth_clients` writes `skip_authorization=True` for every client, because
+these three systems *are* the organisation — there is nobody to ask. This is a
+database column, not a setting, so:
+
+* it is not carried by a deployment, and `manage.py check` cannot see it;
+* an `Application` created through `/admin/` or the shell defaults to `False`,
+  and the only symptom is a consent screen named after the client, listing the
+  scopes, before the user reaches the system they clicked.
+
+`OAUTH2_PROVIDER["REQUEST_APPROVAL_PROMPT"]` is `"auto"` precisely so this column
+is the single thing that decides. If each system starts asking for permission,
+check the rows first:
+
+```python
+from oauth2_provider.models import Application
+Application.objects.filter(skip_authorization=False)   # should be empty
+```
+
+A `False` here also means no `Grant` row is created until the user approves, so
+the request never reaches the system's callback and the card appears to do
+nothing.
+
 ### Tests
 
 ```powershell
@@ -1000,6 +1122,8 @@ Implementation order agreed for the SSO work, completed in order.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-31 | **`skip_authorization` set to `True` on all five OAuth clients.** Every row had it `False`, so each system opened with an "Authorize GreenHill PMS Production?" consent screen listing the requested scopes. `seed_oauth_clients` has always written `True` for first-party clients; the existing rows predate that behaviour and were never re-seeded. The flag lives in the database, not in code, so a deployment does **not** fix it and `manage.py check` cannot see it — the symptom is purely a UI prompt. Verified after the change: all three systems now answer `/o/authorize/` with an immediate `302` to their own callback carrying a `code`, no interstitial. |
+| 2026-10-31 | **`CORS_ALLOW_CREDENTIALS = True`.** Login failed with "Unable to connect to the authentication server" against a completely healthy backend. The cause was not a network problem: `django-cors-headers` defaults `CORS_ALLOW_CREDENTIALS` to `False`, so no `Access-Control-Allow-Credentials` header was sent, and the browser discarded the response to the `credentials: 'include'` login POST before the app could read it. `fetch` rejected, landing in the generic `catch` that prints the connection message. Confirmed by preflight: `access-control-allow-origin` was present but `access-control-allow-credentials` was absent. |
 | 2026-10-31 | **`127.0.0.1` added to CORS and CSRF trusted origins.** Both lists held only `http://localhost:5173/5174`, but `Auth-frontend`'s Vite dev server binds `127.0.0.1:5174` explicitly and `vite.config.ts` proxies `/auth` to `127.0.0.1:8001`. A browser treats `localhost` and `127.0.0.1` as different origins, so the real dev origin was blocked and CSRF-checked endpoints rejected it. |
 | 2026-10-31 | **Remote PostgreSQL support.** `settings.py` now passes `OPTIONS: {"sslmode": ...}` and `CONN_MAX_AGE`. `DB_SSLMODE` defaults to `require` for any non-loopback `DB_HOST` and `disable` for `localhost`, because Render's external endpoint rejects plaintext connections with `FATAL: SSL/TLS required`. `require` encrypts without verifying the certificate. README documents the trap where Render's *display* name (`greenhill-auth-database`) is not the real `datname`, and warns that `manage.py test` will attempt `CREATE DATABASE` on production unless `DB_NAME` is blanked. |
 | 2026-10-31 | **`create_access_user` command.** Creates a Django account (with `/admin/` flags) and its `AllowedEmail` row in one command, generating a 24-character password that is printed once. Needed because `createsuperuser` refuses non-interactive use and never writes an `AllowedEmail` row — which meant a superuser who could open `/admin/` but whom EID, Procurement and Incident all rejected. Also fixes an unreachable repair branch: a row whose *username* matched the email but whose email was blank used to fall through to the "username clash" error instead of being adopted and repaired. 25 new tests; suite now 216. |

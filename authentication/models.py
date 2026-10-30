@@ -152,3 +152,118 @@ class UserSession(models.Model):
     @property
     def is_active(self):
         return self.revoked_at is None
+
+
+class UserProfile(models.Model):
+    """The parts of a person's profile that are not their identity.
+
+    Name and email are *not* here. They live on ``auth.User`` and are asserted
+    by Google at sign-in, so copying them into a second table would create two
+    disagreeing answers to "what is my name?". The OIDC claims read
+    ``auth.User`` directly, which is what makes every system show the same
+    person.
+
+    Only the avatar needs somewhere to live, because it has no home on
+    ``auth.User``.
+
+    It is stored as a data URL in a text column. That is deliberately simple:
+    the alternative is a media root that has to survive a redeploy and be
+    served from a second host, and this is a 2 MB avatar, not a document.
+    ``MAX_AVATAR_BYTES`` bounds it so one person cannot fill the database.
+    """
+
+    # A data URL is roughly 4/3 the size of the image once base64-encoded.
+    # 4 MB of text is therefore about a 3 MB image -- generous for a headshot
+    # and still bounded.
+    MAX_AVATAR_BYTES = 4 * 1024 * 1024
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="greenhill_profile",
+    )
+
+    avatar_data = models.TextField(
+        blank=True,
+        help_text=(
+            "Data URL (data:image/png;base64,...) for the person's avatar. "
+            "Empty means the frontend draws initials instead."
+        ),
+    )
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "user profile"
+        verbose_name_plural = "user profiles"
+
+    def __str__(self):
+        return f"profile for {self.user}"
+
+    @property
+    def has_avatar(self):
+        return bool(self.avatar_data)
+
+    def set_avatar_data(self, value):
+        """Store an avatar, refusing anything oversized or not an image.
+
+        Validated here rather than in the view so every caller -- the API now,
+        a management command or the admin later -- gets the same rules.
+        """
+        value = (value or "").strip()
+
+        if not value:
+            self.avatar_data = ""
+            return
+
+        if not value.startswith("data:image/"):
+            raise ValueError("Avatar must be an image data URL.")
+
+        if len(value) > self.MAX_AVATAR_BYTES:
+            raise ValueError("Avatar is too large.")
+
+        self.avatar_data = value
+
+
+class UserSettings(models.Model):
+    """Per-person preferences, shared by all three systems.
+
+    These used to be written to ``localStorage`` in the auth frontend only.
+    That cannot be shared: ``localStorage`` is scoped to one origin, so the
+    same person's preferences on the auth app were invisible to EID, PMS and
+    ISMP, and invisible again in a private window. Keeping them server-side
+    is what makes "one account, three systems" true for settings as well as
+    for identity.
+    """
+
+    class Appearance(models.TextChoices):
+        LIGHT = "Light", "Light"
+        DARK = "Dark", "Dark"
+        SYSTEM = "System", "System"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="greenhill_settings",
+    )
+
+    in_app_notifications = models.BooleanField(default=True)
+    email_notifications = models.BooleanField(default=True)
+    browser_notifications = models.BooleanField(default=False)
+
+    appearance = models.CharField(
+        max_length=20,
+        choices=Appearance.choices,
+        default=Appearance.LIGHT,
+    )
+    time_zone = models.CharField(max_length=64, default="Africa / Kampala")
+    reduce_motion = models.BooleanField(default=False)
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "user settings"
+        verbose_name_plural = "user settings"
+
+    def __str__(self):
+        return f"settings for {self.user}"

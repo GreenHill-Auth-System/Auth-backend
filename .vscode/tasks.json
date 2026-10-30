@@ -1,0 +1,31 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "render migrate",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"manage.py",
+				"migrate",
+				"--no-input"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "run backend on 8001",
+			"detail": "Vite proxies /auth to 127.0.0.1:8001 (see vite.config.ts), so the API must listen there.",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"manage.py",
+				"runserver",
+				"127.0.0.1:8001"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "none"
+		}
+	]
+}

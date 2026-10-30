@@ -42,6 +42,28 @@ urlpatterns = [
         name="current_user",
     ),
 
+    # ---- Profile and preferences ---------------------------------------
+    #
+    # Stored per account, not per browser. `localStorage` is scoped to one
+    # origin, so anything kept there is invisible to the other two systems and
+    # to a private window -- which is the difference between "one account" and
+    # "one account that looks different in three places".
+    path(
+        "profile/",
+        views.user_profile,
+        name="user_profile",
+    ),
+    path(
+        "settings/",
+        views.user_settings,
+        name="user_settings",
+    ),
+    path(
+        "avatar/",
+        views.user_avatar,
+        name="user_avatar",
+    ),
+
     # ---- Sign-out ------------------------------------------------------
     path(
         "logout/",

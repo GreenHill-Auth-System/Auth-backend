@@ -292,6 +292,13 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "https://greenhill-auth-frontend2.onrender.com",
+    # The three systems' own frontends. They are separate origins, so a
+    # `fetch(".../auth/me/")` or a sign-out call made *from* a system needs the
+    # system's origin listed here. Without it the browser discards the
+    # response and the system cannot tell who is signed in -- or sign them
+    # out -- even though the shared session cookie is valid.
+    "https://greenhill-eid-frontend.onrender.com",
+    "https://pms-frontend-4fm8.onrender.com",
     "https://165.232.50.141.sslip.io",
     "https://138.197.193.101/",
 ]
@@ -304,6 +311,17 @@ CORS_ALLOW_CREDENTIALS = True
 # management command, including `manage.py test`. Normalising here means one
 # stray slash can never take the whole project down again.
 CORS_ALLOWED_ORIGINS = [origin.rstrip("/") for origin in CORS_ALLOWED_ORIGINS]
+
+# The login call is `fetch(..., { credentials: 'include' })`, because the session
+# cookie has to travel with it. django-cors-headers defaults this to False, which
+# omits `Access-Control-Allow-Credentials`, and a browser then discards the
+# response *before* the app can read it. The symptom is not a 401 — `fetch`
+# rejects, so the login screen reports "Unable to connect to the authentication
+# server" even though the server answered correctly.
+#
+# Safe only because the origins above are explicit: with credentials enabled a
+# wildcard is no longer allowed, so this must never be paired with CORS_ALLOW_ALL_ORIGINS.
+CORS_ALLOW_CREDENTIALS = True
 
 
 SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", str(60 * 60 * 8)))  # 8 hours
@@ -335,6 +353,12 @@ CSRF_TRUSTED_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "https://greenhill-auth-frontend2.onrender.com",
+    # Same list as CORS_ALLOWED_ORIGINS above, and for the same reason: a
+    # profile or preference change posted from a system's origin is a
+    # state-changing request, so Django checks the Origin header against this
+    # list before accepting it.
+    "https://greenhill-eid-frontend.onrender.com",
+    "https://pms-frontend-4fm8.onrender.com",
     "https://165.232.50.141.sslip.io",
     "https://138.197.193.101",
 ]
@@ -389,6 +413,15 @@ SECURE_REFERRER_POLICY = "same-origin"
 
 # The IdP never needs to be framed by anyone, not even the three systems.
 X_FRAME_OPTIONS = "DENY"
+
+# An avatar arrives as a base64 data URL, which is roughly a third larger than
+# the image itself. Django refuses a request body above this size *before* any
+# view runs, so the default 2.5 MB would reject a legitimate 3 MB photo as a
+# malformed request instead of letting the profile endpoint answer "too large".
+# Raised to leave room for the largest avatar the model will store
+# (`UserProfile.MAX_AVATAR_BYTES`, 4 MB) plus that encoding overhead. It is not
+# a free pass: the endpoint still refuses anything over the stored limit.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 8 * 1024 * 1024
 
 
 
@@ -484,9 +517,32 @@ OAUTH2_PROVIDER = {
 
     # ---- RP-initiated logout ----
 
+    # This is what lets a person sign out from PMS and be signed out of EID and
+    # ISMP too, which is the point of a single sign-on: signing out anywhere
+    # means signing out everywhere.
+    #
+    # ``DELETE_TOKENS`` is what makes that true rather than cosmetic.
+    # django-oauth-toolkit deletes every access and refresh token *for the
+    # account* here, not just the ones belonging to the system that asked. So
+    # clicking "Sign out" in any of the three systems revokes the other two's
+    # tokens at the same moment; without this they would keep working until
+    # their access token expired, up to an hour later.
     "OIDC_RP_INITIATED_LOGOUT_ENABLED": True,
     "OIDC_RP_INITIATED_LOGOUT_DELETE_TOKENS": True,
-    "OIDC_RP_INITIATED_LOGOUT_ALWAYS_PROMPT": True,
+
+    # The toolkit's default is ``True``, which makes every sign-out in every
+    # relying party stop at a page on the identity provider asking "are you
+    # sure?". That is the OpenID Connect *SHOULD*, and it makes sense for a
+    # provider serving unrelated third parties -- but here the three systems
+    # are the same organisation and the same person. The prompt only reads as
+    # the wrong application, and it makes signing out of PMS look like it
+    # failed because the user lands back on the auth site instead of the system
+    # they were in.
+    #
+    # Prompting is still forced by the toolkit whenever an ``id_token_hint`` is
+    # missing or belongs to a different account, so a genuinely ambiguous
+    # request still asks. Only the "always" is switched off.
+    "OIDC_RP_INITIATED_LOGOUT_ALWAYS_PROMPT": False,
 
     # ---- RFC 9700 / OAuth 2.0 Security BCP ----
 
