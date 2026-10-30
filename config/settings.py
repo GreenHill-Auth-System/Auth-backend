@@ -303,6 +303,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://138.197.193.101/",
 ]
 
+# Needed so browsers send the login cookie on cross-origin requests.
+CORS_ALLOW_CREDENTIALS = True
+
 # An origin never carries a path, and a trailing slash makes django-cors-headers
 # raise `corsheaders.E014`, which is a *system check error*: it aborts every
 # management command, including `manage.py test`. Normalising here means one
