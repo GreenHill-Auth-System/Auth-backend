@@ -188,6 +188,16 @@ def _mask_email(email):
     return f"{local[:2]}***@{domain}"
 
 
+def _google_failure(request, reason):
+    """Send a failed Google sign-in back to a page that can explain it.
+
+    The pending `next` target is deliberately left in the session: a retry
+    should resume the authorization it interrupted, not silently drop the user
+    into the workspace picker.
+    """
+    return redirect(f"{get_frontend_url()}/?error={reason}")
+
+
 def _request_host(request):
     """This request's host, even when Django does not recognise it.
 
@@ -379,10 +389,10 @@ def google_login(request):
     ),
     responses={
         302: OpenApiResponse(
-            description="Redirects to the frontend workspace selector."
-        ),
-        400: OpenApiResponse(
-            description="OAuth state, verifier, token exchange, or ID token error."
+            description=(
+                "Redirects to the frontend workspace selector, or back to "
+                "the sign-in page with a ?error= reason code."
+            )
         ),
     },
 )
@@ -390,26 +400,33 @@ def google_login(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def google_callback(request):
+    """Finish a Google sign-in, and always end up somewhere a human can read.
+
+    Every failure used to return a bare 400 text page. To a user that is
+    indistinguishable from a broken site, and it explains nothing -- the browser
+    simply stopped on a URL that reads ``accounts.google.com`` in their history
+    and then showed a line of plain text. Each failure now sends the browser
+    back to the sign-in page with a ``?error=`` code the frontend turns into a
+    sentence, which is the only way the person who was rejected can act on it.
+    """
     state = request.session.get("google_oauth_state")
     code_verifier = request.session.get("google_code_verifier")
 
     if not state:
-        return HttpResponse(
-            "OAuth state is missing from the session.",
-            status=400,
-        )
+        # The state lived in this browser's session. It is gone if the session
+        # cookie never made the round trip -- usually because this callback was
+        # opened in a different browser, a private window, or after the cookie
+        # was cleared. Nothing was authenticated, so a retry is safe.
+        logger.warning("google callback: no OAuth state in session")
+        return _google_failure(request, "oauth_state_missing")
 
     if not code_verifier:
-        return HttpResponse(
-            "OAuth code verifier is missing from the session.",
-            status=400,
-        )
+        logger.warning("google callback: no PKCE verifier in session")
+        return _google_failure(request, "oauth_state_missing")
 
     if request.GET.get("state") != state:
-        return HttpResponse(
-            "Invalid OAuth state.",
-            status=400,
-        )
+        logger.warning("google callback: state mismatch")
+        return _google_failure(request, "oauth_state_missing")
 
     flow = Flow.from_client_config(
         {
@@ -431,12 +448,11 @@ def google_callback(request):
             authorization_response=request.build_absolute_uri(),
             code_verifier=code_verifier,
         )
-    except Exception:
-        logger.exception("google token exchange failed")
-        return HttpResponse(
-            "Google token exchange failed.",
-            status=400,
-        )
+    except Exception as exc:
+        # Never swallowed silently: a misconfigured redirect URI or client
+        # secret only ever shows up here, and the message names the cause.
+        logger.warning("google token exchange failed: %s", exc)
+        return _google_failure(request, "oauth_token_exchange_failed")
 
     credentials = flow.credentials
 
@@ -446,12 +462,9 @@ def google_callback(request):
             requests.Request(),
             os.getenv("GOOGLE_CLIENT_ID"),
         )
-    except Exception:
-        logger.exception("google id token verification failed")
-        return HttpResponse(
-            "Google ID token verification failed.",
-            status=400,
-        )
+    except Exception as exc:
+        logger.warning("google id token verification failed: %s", exc)
+        return _google_failure(request, "oauth_id_token_invalid")
 
     email = (google_user.get("email") or "").strip().lower()
     name = google_user.get("name") or ""

@@ -143,11 +143,11 @@ class GoogleCallbackSecurityTests(TestCase):
     def test_callback_rejects_missing_oauth_state(self):
         response = self.client.get(reverse("google_callback"))
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(
-            "OAuth state is missing from the session.",
-            response.content.decode(),
-        )
+        # A bare 400 page told the user nothing and stranded them on the
+        # backend host, so the failure now returns to the sign-in screen with a
+        # reason the frontend can render.
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("error=oauth_state_missing", response.url)
 
     def test_callback_rejects_missing_code_verifier(self):
         session = self.client.session
@@ -159,11 +159,8 @@ class GoogleCallbackSecurityTests(TestCase):
             {"state": "test-state"},
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(
-            "OAuth code verifier is missing from the session.",
-            response.content.decode(),
-        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("error=oauth_state_missing", response.url)
 
     def test_callback_rejects_invalid_oauth_state(self):
         session = self.client.session
@@ -176,11 +173,8 @@ class GoogleCallbackSecurityTests(TestCase):
             {"state": "invalid-state"},
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(
-            "Invalid OAuth state.",
-            response.content.decode(),
-        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("error=oauth_state_missing", response.url)
 
 
 class GoogleCallbackDomainGuardTests(TestCase):
@@ -401,11 +395,8 @@ class GoogleIdTokenVerificationTests(TestCase):
             {"state": "test-state", "code": "test-code"},
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(
-            "Google ID token verification failed.",
-            response.content.decode(),
-        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("error=oauth_id_token_invalid", response.url)
 
 
 class LocalUserAuthenticationTests(TestCase):
