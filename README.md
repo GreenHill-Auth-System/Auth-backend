@@ -37,7 +37,7 @@ that sends the user here to authenticate and then validates the token it gets ba
 | Redis cache (required for throttling + token revocation at scale) | Optional — set `REDIS_URL` |
 | Transport security (HSTS, SSL redirect) | Env-gated — off locally, on in production |
 
-Test suite: **191 tests, all passing** (`python manage.py test authentication`,
+Test suite: **216 tests, all passing** (`python manage.py test authentication`,
 run against SQLite). `manage.py check` clean; `makemigrations --check` reports no
 changes.
 
@@ -668,9 +668,9 @@ All runtime dependencies are pinned in `requirements.txt` (including
 
 A person needs **two** things: an account (`auth.User`) and permission
 (`AllowedEmail`). Creating the account is what a first sign-in does; granting
-permission is what an administrator does.
-
-The command that does it:
+permission is what an administrator does. `grant_access` writes the permission
+only; `create_access_user` (below) writes both at once, and is what you want for
+the handful of people who need a password.
 
 ```powershell
 python manage.py grant_access cnmusisi@greenhillacademy.ac.ug
@@ -708,6 +708,56 @@ python manage.py grant_access cnmusisi@greenhillacademy.ac.ug --role manager --s
 
 Now `cnmusisi` may sign in with Google or with a password, and EID will accept the
 `eid` scope for them. Procurement and Incident will not.
+
+### Creating an account with a role and a password
+
+`grant_access` only writes policy — it never sets a password, because staff
+normally sign in with Google and never have one. When you *do* need a working
+password (the two people who run the system, and anyone who must reach
+`/admin/`), use `create_access_user`, which creates the Django account **and**
+the `AllowedEmail` row in one step:
+
+```powershell
+# Top role, all three systems, staff + superuser (i.e. can reach /admin/)
+python manage.py create_access_user tmugume@greenhillacademy.ac.ug --role CEO --name "T Mugume"
+
+# Frontend-only account: no /admin/ access, no password reset surprises
+python manage.py create_access_user jdoe@greenhillacademy.ac.ug --role staff --systems eid --no-admin
+
+# Re-issue a password for an account that already exists
+python manage.py create_access_user tmugume@greenhillacademy.ac.ug --reset-password
+
+# Supply your own password instead of a generated one (read from stdin, so it
+# never lands in your shell history)
+python manage.py create_access_user jdoe@greenhillacademy.ac.ug --password-from-stdin
+
+python manage.py create_access_user jdoe@greenhillacademy.ac.ug --dry-run   # show, write nothing
+```
+
+Options: `--role` (`ceo` / `manager` / `staff`, case-insensitive; default `ceo`),
+`--systems` (same spellings as `grant_access`; omitted → all three, passed empty →
+none), `--name "First Last"`, `--no-admin`, `--reset-password`,
+`--password-from-stdin`, `--dry-run`.
+
+Rules it enforces:
+
+* **The password is printed exactly once.** Only its hash is stored, so if you
+  lose it there is nothing to recover — re-run with `--reset-password`.
+* **An existing password is never silently replaced.** Re-running the command is
+  safe and idempotent; the summary says `password unchanged` unless you ask for a
+  new one.
+* Generated passwords are 24 alphanumeric characters (≈143 bits) and are still
+  passed through Django's configured validators.
+* **Username == email.** That is what `find_user_by_email()` resolves to, so the
+  two identifiers can never drift apart. If a *different* account already holds
+  that username, the command stops rather than merging them.
+* A pre-existing row with a blank email (say, from an old `createsuperuser`) is
+  adopted and its email repaired — you do not get a duplicate account, and its
+  existing password survives.
+
+Note that `/admin/` access comes from `is_staff` / `is_superuser` on the Django
+user, not from `AllowedEmail.role`. `--no-admin` creates the account and the
+policy row but leaves those flags off.
 
 ### Registering the three applications
 
@@ -767,6 +817,7 @@ authentication/
     management/commands/
         seed_oauth_clients.py   # create/rotate the three Applications
         grant_access.py         # provision an AllowedEmail row
+        create_access_user.py   # account + password + AllowedEmail row in one step
         prune_expired.py        # cleartokens + clearsessions + stale sessions
     tests.py, test_*.py
     migrations/
@@ -884,6 +935,7 @@ Implementation order agreed for the SSO work, completed in order.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-31 | **`create_access_user` command.** Creates a Django account (with `/admin/` flags) and its `AllowedEmail` row in one command, generating a 24-character password that is printed once. Needed because `createsuperuser` refuses non-interactive use and never writes an `AllowedEmail` row — which meant a superuser who could open `/admin/` but whom EID, Procurement and Incident all rejected. Also fixes an unreachable repair branch: a row whose *username* matched the email but whose email was blank used to fall through to the "username clash" error instead of being adopted and repaired. 25 new tests; suite now 216. |
 | 2026-10-31 | **Suite made `.env`-independent.** `test_unconfigured_party_is_skipped_with_a_warning` assumed the two non-EID relying parties had no redirect URIs in the environment. Once a real `.env` existed — which ships `http://localhost:5174/auth/callback` and `http://localhost:5175/auth/callback` — all three parties were configured and the test failed. It now blanks `PROCUREMENT_*` / `INCIDENT_*` explicitly, matching what `test_raises_when_nothing_is_configured` already did. |
 | 2026-10-30 | **`.env` bootstrap + clean API docs.** Added `generate_env.py`, which turns `.env.example` into a working `.env` and fills in `SECRET_KEY` and `OIDC_RSA_PRIVATE_KEY`. The session and sign-out endpoints now declare `request=None` and real response serializers, which removes every `drf_spectacular.W002` — `check --deploy` is down from 11 issues to 4, all of them deliberate env-gated ones. `manage.py spectacular --validate` reports 0 warnings, 0 errors. |
 | 2026-10-31 | **Steps 3–8 + Ops**: GreenHill email policy enforced on both login paths (`domain_guard.py`, `403 greenhill_email_format`); `clients.py` + `seed_oauth_clients` for the three relying parties; `LOGIN_URL` and a session-stored `next` round trip that survives the Google hop; `validate_scopes()` closing the scope hole; `UserSession` (migration `0007`), throttled tracking middleware, `sessions.py`, `tokens.py` and the four session-manager endpoints; global logout with token revocation, `/auth/logout-everywhere/` and `/auth/logout-redirect/`; `/auth/csrf/`; `grant_access` and `prune_expired` commands; optional Redis cache; `SESSION_COOKIE_AGE` / `SESSION_TOUCH_INTERVAL` / `SECURE_*` env-gated. Five new test modules. |
