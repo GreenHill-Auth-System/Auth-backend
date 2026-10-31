@@ -81,6 +81,11 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
 
+    # Nothing this service says about a person may be reused from a browser
+    # cache. A restored page never asks again, so a cached "still signed in"
+    # answer would survive a sign-out -- see authentication/cache_headers.py.
+    "authentication.cache_headers.NoStoreAuthResponses",
+
     # Keeps the session manager's device list in step with real sessions.
     # Must come after AuthenticationMiddleware (it needs request.user) and
     # before MessageMiddleware, which is irrelevant but documents intent.
