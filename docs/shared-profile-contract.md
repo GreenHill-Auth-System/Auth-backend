@@ -296,6 +296,11 @@ the OAuth tokens, and leave the person on a sign-in page so the next login mints
 a fresh token. Otherwise the relying party keeps a working access token after the
 user believes they have left.
 
+**Status.** Verified working in the auth app and in EID: both clear their own
+session, then navigate the browser to `/auth/logout-redirect/`, which ends the
+SSO session and deletes every token for the account. PMS and ISMP are not
+verified — same pattern applies, see below.
+
 ### The one rule
 
 **Navigate the browser; do not `fetch`.** The three systems are on sibling
