@@ -220,6 +220,29 @@ if REDIS_URL:
         }
 
 
+# PASSWORD HASHING
+
+# Argon2id first, then Django's PBKDF2 hashers.
+#
+# Why: Django 6 defaults to PBKDF2 with 1,500,000 iterations, which measured
+# ~1.9 s per verify on the development machine -- paid on every sign-in before
+# any database work. Argon2id with the parameters in
+# `authentication/password_hashers.py` verifies in ~0.23 s and is the stronger
+# algorithm anyway.
+#
+# The PBKDF2 entries are kept *after* Argon2 so existing
+# `pbkdf2_sha256$...` hashes still verify and are transparently upgraded to
+# Argon2id on the next successful sign-in. Dropping them would lock out every
+# current user.
+PASSWORD_HASHERS = [
+    "authentication.password_hashers.GreenHillArgon2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
+    "django.contrib.auth.hashers.Argon2PasswordHasher",
+    "django.contrib.auth.hashers.ScryptPasswordHasher",
+]
+
+
 # PASSWORD VALIDATION
 
 AUTH_PASSWORD_VALIDATORS = [

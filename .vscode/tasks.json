@@ -14,14 +14,14 @@
 			"group": "none"
 		},
 		{
-			"label": "run backend on 8001",
-			"detail": "Vite proxies /auth to 127.0.0.1:8001 (see vite.config.ts), so the API must listen there.",
+			"label": "run backend on 8000",
+			"detail": "Vite proxies /auth to 127.0.0.1:8000 (see vite.config.ts), so the API must listen there.",
 			"type": "shell",
 			"command": ".venv\\Scripts\\python.exe",
 			"args": [
 				"manage.py",
 				"runserver",
-				"127.0.0.1:8001"
+				"127.0.0.1:8000"
 			],
 			"isBackground": true,
 			"problemMatcher": [],
