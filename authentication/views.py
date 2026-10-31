@@ -42,6 +42,7 @@ from google_auth_oauthlib.flow import Flow
 from oauth2_provider.models import get_application_model
 
 from authentication.access import get_user_access
+from authentication.avatar_tokens import avatar_path, avatar_user_from_token
 from authentication.domain_guard import (
     GREENHILL_EMAIL_HINT,
     is_greenhill_email,
@@ -800,19 +801,19 @@ def _avatar_url(request, user):
     small: ``/auth/me/`` is called on every page load of all three systems, and
     a base64 avatar would make each of those responses megabytes wide.
 
-    The ``v`` query parameter is the avatar's last modification time, so a
-    browser that has cached the old image fetches the new one the moment it
-    changes -- without it, a replaced avatar can stay stale for as long as the
-    cache entry lives.
+    The URL carries a short-lived signature (see ``avatar_tokens``) because the
+    three systems are three different *sites* under the ``onrender.com`` public
+    suffix. An ``<img>`` from the PMS or EID origin is a third-party request, so
+    it cannot rely on the ``SameSite=None`` session cookie that browsers are
+    blocking -- without the token the photo 404s in every system but this one.
     """
     profile = getattr(user, "greenhill_profile", None)
+    path = avatar_path(profile, user)
 
-    if profile is None or not profile.has_avatar:
+    if not path:
         return ""
 
-    return request.build_absolute_uri(
-        f"/auth/avatar/?v={int(profile.updated_at.timestamp())}"
-    )
+    return request.build_absolute_uri(path)
 
 
 def _profile_for(user):
@@ -997,9 +998,16 @@ def user_settings(request):
 @api_view(["GET"])
 def user_avatar(request):
     if not request.user.is_authenticated:
-        return HttpResponse(status=404)
+        # Cross-site embed: the session cookie is frequently withheld here, so
+        # the URL's own signature is accepted instead. See avatar_tokens.
+        token_user = avatar_user_from_token(request.GET.get("t"))
+        if token_user is None:
+            return HttpResponse(status=404)
+        user = token_user
+    else:
+        user = request.user
 
-    profile = getattr(request.user, "greenhill_profile", None)
+    profile = getattr(user, "greenhill_profile", None)
 
     if profile is None or not profile.has_avatar:
         return HttpResponse(status=404)
@@ -1013,7 +1021,7 @@ def user_avatar(request):
     except (ValueError, TypeError):
         # A stored value we cannot decode is a data problem, not a client
         # error; report it as "no avatar" so the frontend draws initials.
-        logger.warning("undecodable avatar for user %s", request.user.pk)
+        logger.warning("undecodable avatar for user %s", user.pk)
         return HttpResponse(status=404)
 
     response = HttpResponse(image, content_type=content_type)

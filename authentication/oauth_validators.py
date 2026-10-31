@@ -19,6 +19,7 @@ import logging
 from oauth2_provider.oauth2_validators import OAuth2Validator
 
 from authentication.access import get_user_access, split_requested_scopes
+from authentication.avatar_tokens import avatar_path
 
 logger = logging.getLogger(__name__)
 
@@ -30,19 +31,17 @@ def _access_for(request):
 def _picture_url(request):
     """Absolute URL of this person's avatar, or ``""`` when they have none.
 
-    Deliberately mirrors ``views._avatar_url`` rather than importing it: the
-    view module pulls in every endpoint in the project, and this needs one
-    string. Both read the same ``UserProfile`` row, so they cannot disagree
-    about *whether* an avatar exists -- only about the unchanged URL shape.
+    The URL shape comes from ``avatar_tokens`` rather than being rebuilt here,
+    so the claim and ``/auth/me/`` can never disagree about whether an avatar
+    exists -- or about how to make it loadable from another origin.
     """
     profile = getattr(request.user, "greenhill_profile", None)
+    path = avatar_path(profile, request.user)
 
-    if profile is None or not profile.has_avatar:
+    if not path:
         return ""
 
-    return request.build_absolute_uri(
-        f"/auth/avatar/?v={int(profile.updated_at.timestamp())}"
-    )
+    return request.build_absolute_uri(path)
 
 
 class GreenHillOAuth2Validator(OAuth2Validator):
