@@ -47,6 +47,7 @@ from authentication.domain_guard import (
     is_greenhill_email,
     is_valid_greenhill_email,
 )
+from authentication.google_flow import forget_flow, read_flow, remember_flow
 from authentication.models import UserProfile, UserSession, UserSettings
 from authentication.sessions import (
     active_sessions,
@@ -195,8 +196,11 @@ def _google_failure(request, reason):
     The pending `next` target is deliberately left in the session: a retry
     should resume the authorization it interrupted, not silently drop the user
     into the workspace picker.
+
+    The handshake cookie is cleared on every failure so a vetoed attempt cannot
+    leave a still-valid state lying around in this browser.
     """
-    return redirect(f"{get_frontend_url()}/?error={reason}")
+    return forget_flow(redirect(f"{get_frontend_url()}/?error={reason}"))
 
 
 def _request_host(request):
@@ -379,7 +383,17 @@ def google_login(request):
     request.session["google_oauth_state"] = state
     request.session["google_code_verifier"] = code_verifier
 
-    return redirect(authorization_url)
+    # The session cookie is issued here and must come back after a detour
+    # through accounts.google.com. Some browsers will not keep a SameSite=None
+    # cookie across that chain, so the handshake is also carried in a signed
+    # cookie scoped to the callback. See authentication/google_flow.py.
+    response = redirect(authorization_url)
+    return remember_flow(
+        request,
+        response,
+        state=state,
+        code_verifier=code_verifier,
+    )
 
 
 @extend_schema(
@@ -412,6 +426,19 @@ def google_callback(request):
     """
     state = request.session.get("google_oauth_state")
     code_verifier = request.session.get("google_code_verifier")
+
+    if not state or not code_verifier:
+        # Fall back to the signed handshake cookie before giving up. A missing
+        # session here usually means the browser dropped the session cookie on
+        # the way back from Google, not that this sign-in was never started.
+        cookie_state, cookie_verifier = read_flow(request)
+        if cookie_state and cookie_verifier:
+            logger.info(
+                "google callback: recovered handshake from signed cookie "
+                "(session cookie did not survive the Google round trip)"
+            )
+            state = cookie_state
+            code_verifier = cookie_verifier
 
     if not state:
         # The state lived in this browser's session. It is gone if the session
@@ -477,9 +504,7 @@ def google_callback(request):
             "google sign-in rejected for non-GreenHill address %s",
             _mask_email(email),
         )
-        return redirect(
-            f"{get_frontend_url()}/?error=greenhill_account_required"
-        )
+        return _google_failure(request, "greenhill_account_required")
 
     # Google must assert that it has verified this address, and a Workspace
     # account must belong to GreenHill's hosted domain. Checking only the email
@@ -493,9 +518,7 @@ def google_callback(request):
             google_user.get("hd"),
             google_user.get("email_verified"),
         )
-        return redirect(
-            f"{get_frontend_url()}/?error={claim_error}"
-        )
+        return _google_failure(request, claim_error)
 
     access = get_user_access(email)
 
@@ -509,18 +532,14 @@ def google_callback(request):
             _mask_email(email),
             exc,
         )
-        return redirect(
-            f"{get_frontend_url()}/?error=identity_conflict"
-        )
+        return _google_failure(request, "identity_conflict")
 
     if not user.is_active:
         logger.warning(
             "google sign-in refused for inactive account %s",
             _mask_email(email),
         )
-        return redirect(
-            f"{get_frontend_url()}/?error=account_inactive"
-        )
+        return _google_failure(request, "account_inactive")
 
     login(request, user)
 
@@ -543,7 +562,7 @@ def google_callback(request):
 
     # If this sign-in was a detour from /o/authorize/, go back there so the
     # relying party gets its authorization code instead of a stranded browser.
-    return redirect(consume_post_login_redirect(request))
+    return forget_flow(redirect(consume_post_login_redirect(request)))
 
 
 @extend_schema(
