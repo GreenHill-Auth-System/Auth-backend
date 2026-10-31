@@ -267,3 +267,34 @@ class UserSettings(models.Model):
 
     def __str__(self):
         return f"settings for {self.user}"
+
+
+def profile_version(user):
+    """A number that changes whenever this person's displayed profile changes.
+
+    EID, PMS and ISMP each hold a *copy* of the profile -- a local user row or a
+    cached API response -- because they cannot query this database. Copies go
+    stale the moment someone edits their name or photo here, and the visible
+    symptom is one person with two different names in two systems.
+
+    Rather than have three systems poll the whole profile, they store this
+    integer next to their copy and compare it against the claim in their next
+    token. Cheap, and it cannot disagree with the data because it *is* the data's
+    modification time.
+
+    ``UserProfile.updated_at`` is touched on every profile write, including a
+    name-only change, so this is a true "something changed" marker rather than
+    an avatar-only one.
+
+    Treat the number as opaque: it is a moment in time, not a counter, and only
+    equality (or "is this newer than my copy?") is meaningful. It is measured in
+    milliseconds because a whole-second version would let two edits in the same
+    second produce the same value, which is exactly the case where a relying
+    party would keep showing the old name.
+    """
+    profile = getattr(user, "greenhill_profile", None)
+
+    if profile is None:
+        return 0
+
+    return int(profile.updated_at.timestamp() * 1000)

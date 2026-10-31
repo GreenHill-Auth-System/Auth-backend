@@ -49,7 +49,12 @@ from authentication.domain_guard import (
     is_valid_greenhill_email,
 )
 from authentication.google_flow import forget_flow, read_flow, remember_flow
-from authentication.models import UserProfile, UserSession, UserSettings
+from authentication.models import (
+    UserProfile,
+    UserSession,
+    UserSettings,
+    profile_version,
+)
 from authentication.sessions import (
     active_sessions,
     revoke_all_sessions,
@@ -784,6 +789,9 @@ def current_user(request):
     else:
         authenticated_user.pop("picture", None)
 
+    # Lets a system tell whether the copy of this profile it cached is stale.
+    authenticated_user["profile_version"] = profile_version(request.user)
+
     request.session["authenticated_user"] = authenticated_user
 
     return JsonResponse(
@@ -850,6 +858,9 @@ def _profile_payload(request, user):
         "role": get_user_access(user.email)["role"],
         "avatar_data": profile.avatar_data,
         "picture": _avatar_url(request, user),
+        # Changes whenever anything displayed about this person changes, so a
+        # system that cached the profile can tell it needs to refetch.
+        "profile_version": profile_version(user),
     }
 
 
@@ -910,6 +921,12 @@ def user_profile(request):
             return JsonResponse({"detail": str(error)}, status=400)
 
         profile.save(update_fields=["avatar_data", "updated_at"])
+    else:
+        # A name-only change still has to bump `updated_at`, because that is
+        # what `profile_version` reports to the other systems. Without this a
+        # renamed person would keep their old name in EID until they happened
+        # to change their photo too.
+        profile.save(update_fields=["updated_at"])
 
     # Keep the cached session copy in step so the next page load -- or the
     # next system that asks -- sees the new name without a re-login.

@@ -20,6 +20,7 @@ from oauth2_provider.oauth2_validators import OAuth2Validator
 
 from authentication.access import get_user_access, split_requested_scopes
 from authentication.avatar_tokens import avatar_path
+from authentication.models import profile_version
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class GreenHillOAuth2Validator(OAuth2Validator):
         "picture": "profile",
         "role": "profile",
         "authorized_systems": "profile",
+        "profile_version": "profile",
     })
 
     # ------------------------------------------------------------------
@@ -112,12 +114,15 @@ class GreenHillOAuth2Validator(OAuth2Validator):
 
     def get_additional_claims(self):
         return {
+            # Falls back to the address rather than emitting "": a relying
+            # party that shows a blank header looks broken, and there is no
+            # system that can recover the name from an empty string.
             "name": lambda request: " ".join(
                 part for part in (
                     request.user.first_name,
                     request.user.last_name,
                 ) if part
-            ),
+            ) or request.user.email,
             "given_name": lambda request: request.user.first_name,
             "family_name": lambda request: request.user.last_name,
             "preferred_username": lambda request: request.user.username,
@@ -127,6 +132,9 @@ class GreenHillOAuth2Validator(OAuth2Validator):
             "authorized_systems": lambda request: _access_for(request)[
                 "authorized_systems"
             ],
+            # Let a relying party detect that its cached copy is stale instead
+            # of polling the whole profile. See models.profile_version.
+            "profile_version": lambda request: profile_version(request.user),
         }
 
     def get_discovery_claims(self, request):
@@ -140,4 +148,5 @@ class GreenHillOAuth2Validator(OAuth2Validator):
             "picture",
             "role",
             "authorized_systems",
+            "profile_version",
         })
