@@ -388,6 +388,65 @@ in a system nobody remembered to tidy.
 * **Do not reuse the old token.** A revoked token is deleted, so presenting it
   returns `401 invalid_token`, not a stale success.
 
+### The back arrow is a sign-in unless you close it
+
+Signing out is only half the job. A browser is allowed to keep the page you left
+in memory — the back/forward cache — and put it back on the glass with no
+network request at all: React does not mount, no effect runs, and the dashboard
+you signed out of is simply returned. To a person that looks exactly like
+"the back arrow logs me in".
+
+Three things have to be true in every system. One of them is a server change,
+which is why it belongs in this document.
+
+**1. The server must say the answer is not reusable.**
+
+```http
+Cache-Control: no-store, no-cache, must-revalidate, private, max-age=0
+Pragma: no-cache
+Expires: 0
+```
+
+on every response that talks about a session: `/auth/me/`, the profile, the
+settings, the session list, the sign-out result. The auth backend does this with
+`authentication/cache_headers.py`; EID's `core/oidc_views.py` does it per view.
+Without it a `200 {"authenticated": true}` can be replayed from the cache after
+the person has left.
+
+**2. No answer about the session may be read from the cache.**
+
+```ts
+await fetch("/api/auth/me/", {
+  credentials: "include",
+  cache: "no-store",           // not optional
+  headers: { Accept: "application/json" },
+});
+```
+
+**3. The shell must be hidden until the server answers.** Not redirected, not
+"show the dashboard and fix it when the data fails" — hidden. A dashboard whose
+panels are empty still tells the person which pages exist, and every click is a
+request made with no session behind it. Gate the whole layout, and re-ask the
+question on the three ways a signed-out screen comes back:
+
+| Event | When | What to do |
+| --- | --- | --- |
+| `pageshow` with `persisted` | the back/forward cache restored the page | hide first, then ask |
+| `popstate` | an in-app history move | ask |
+| `visibilitychange` → `visible` | tab regains focus after sign-out elsewhere | ask |
+
+EID implements this in `src/components/SessionGate.tsx` and
+`src/lib/session.ts`; the auth app does it inline in `src/App.tsx`. Copy either.
+
+Two details that are easy to get wrong:
+
+* **`unknown` is not `signed-out`.** A 502 from a cold instance says nothing
+  about the person's credentials. Close the gate on two definite `no` answers,
+  never on a timeout.
+* **A sign-in link must start a sign-in.** Link to `<backend>/api/auth/login/`,
+  not to a `/login` route that may not exist and not to the provider's front
+  page, which only shows the workspace list and loops back.
+
 ---
 
 ## 7. How to prove it works
