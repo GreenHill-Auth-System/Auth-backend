@@ -64,7 +64,7 @@ from authentication.sessions import (
     serialize_session,
     track_session,
 )
-from authentication.tokens import revoke_user_tokens
+from authentication.tokens import revoke_user_tokens, user_from_bearer_token
 from authentication.users import (
     find_user_by_email,
     google_claims_are_trustworthy,
@@ -126,6 +126,9 @@ SIGN_OUT_RESPONSE = inline_serializer(
         "sessions_revoked": serializers.IntegerField(),
         "access_tokens_revoked": serializers.IntegerField(),
         "refresh_tokens_revoked": serializers.IntegerField(),
+        # Where the caller should send the browser so the person lands on the
+        # sign-in page instead of a stale, empty shell.
+        "redirect_to": serializers.CharField(),
     },
 )
 
@@ -269,21 +272,54 @@ def consume_post_login_redirect(request):
 
 
 def _session_user(request):
-    """The account behind this browser session, without DRF authentication.
+    """The account this sign-out call is entitled to end, or ``None``.
 
-    ``sign_out`` is reachable without DRF authentication so a cross-origin
-    ``fetch`` from the three frontends is not rejected by CSRF checks, which
-    means ``request.user`` is anonymous there. The session is what identifies
-    the account.
+    Two ways in, because there are two callers:
+
+    * the shared session cookie -- how a *browser* signs itself out;
+    * ``Authorization: Bearer <access token>`` -- how a relying party's
+      *backend* signs its user out on their behalf.
+
+    ``sign_out`` accepts no DRF authentication so a cross-origin ``fetch`` is
+    not rejected by CSRF checks, which means ``request.user`` is anonymous
+    there and the identity has to be resolved here.
+
+    The bearer path is not a convenience. The three systems are served from
+    sibling ``*.onrender.com`` hosts, that suffix is a public suffix, so a
+    ``fetch`` from one of their pages is a third-party request and the session
+    cookie is routinely withheld. Without a second identity source the call
+    would answer 200, revoke nothing, and leave a live access token in the
+    relying party's hands -- precisely the failure central sign-out exists to
+    prevent.
     """
     user_id = request.session.get("_auth_user_id")
-    if not user_id:
-        return None
 
-    try:
-        return get_user_model().objects.filter(pk=user_id).first()
-    except (TypeError, ValueError):
-        return None
+    if user_id:
+        try:
+            return get_user_model().objects.filter(pk=user_id).first()
+        except (TypeError, ValueError):
+            return None
+
+    return user_from_bearer_token(_bearer_token(request))
+
+
+def _bearer_token(request):
+    """The bearer token presented on this request, or ``""``.
+
+    Read straight off ``META`` rather than through DRF: the sign-out views run
+    with ``authentication_classes([])`` on purpose, so nothing has consumed
+    the header by the time this is called.
+    """
+    header = (
+        getattr(request, "META", {}).get("HTTP_AUTHORIZATION") or ""
+    ).strip()
+
+    scheme, _, value = header.partition(" ")
+
+    if scheme.lower() != "bearer":
+        return ""
+
+    return value.strip()
 
 
 def _end_session(request, *, everywhere=False):
@@ -1083,6 +1119,12 @@ def sign_out(request):
             "authenticated": False,
             "message": "You have been signed out successfully.",
             **result,
+            # A JSON caller cannot follow a redirect, so tell it where to send
+            # the browser. This is what makes "sign out" end on the sign-in
+            # page with a fresh token on the next login, rather than leaving a
+            # stale shell that keeps retrying a revoked token.
+            "redirect_to": _post_logout_target(request, _body_next(request))
+            or f"{get_frontend_url()}/",
         },
         status=200,
     )
@@ -1111,6 +1153,8 @@ def sign_out_everywhere(request):
             "authenticated": False,
             "message": "You have been signed out on every device.",
             **result,
+            "redirect_to": _post_logout_target(request, _body_next(request))
+            or f"{get_frontend_url()}/",
         },
         status=200,
     )
@@ -1154,7 +1198,7 @@ def sign_out_redirect(request):
     return redirect(target or f"{get_frontend_url()}/")
 
 
-def _post_logout_target(request):
+def _post_logout_target(request, target=None):
     """Return an absolute ``next`` URL to send the browser to, or ``""``.
 
     Only an absolute URL on a trusted, registered origin qualifies; anything
@@ -1162,8 +1206,14 @@ def _post_logout_target(request):
     path is refused on purpose: it would resolve against *this* service, which
     serves no frontend routes, so the user would get a 404 immediately after
     signing out.
+
+    ``target`` overrides the query string so a JSON caller can pass ``next`` in
+    its body, where a browser-based caller passes it in the URL.
     """
-    target = (request.GET.get("next") or "").strip()
+    if target is None:
+        target = request.GET.get("next") or ""
+
+    target = target.strip()
     if not target:
         return ""
 
@@ -1180,6 +1230,21 @@ def _post_logout_target(request):
         return ""
 
     return target
+
+
+def _body_next(request):
+    """``next`` from a JSON body, for callers that cannot use a query string."""
+    try:
+        data = request.data
+    except Exception:  # malformed body: fall back to the frontend root
+        return ""
+
+    if not isinstance(data, dict):
+        return ""
+
+    value = data.get("next")
+
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _trusted_post_logout_hosts():

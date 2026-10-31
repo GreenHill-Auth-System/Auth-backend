@@ -289,7 +289,104 @@ edits them.
 
 ---
 
-## 6. How to prove it works
+## 6. Signing out from any system
+
+A "Sign out" button in EID, PMS or ISMP must end the single sign-on session, kill
+the OAuth tokens, and leave the person on a sign-in page so the next login mints
+a fresh token. Otherwise the relying party keeps a working access token after the
+user believes they have left.
+
+### The one rule
+
+**Navigate the browser; do not `fetch`.** The three systems are on sibling
+`*.onrender.com` hosts and that suffix is a public suffix, so a `fetch` from one
+of their pages is a third-party request and the shared session cookie is
+routinely withheld. A top-level navigation *is* sent the cookie.
+
+```
+https://greenhill-auth-backend2.onrender.com/auth/logout-redirect/?next=<where-to-land>
+```
+
+That endpoint ends the session, revokes every access and refresh token for the
+account, and 302s to `next`. `next` must be an absolute URL on a trusted origin:
+this service's frontend, an origin in `CORS_ALLOWED_ORIGINS`, or a relying
+party's registered `post_logout_redirect_uris`. Anything else is dropped and the
+browser lands on the auth frontend.
+
+### The button
+
+```tsx
+const SSO = import.meta.env.VITE_SSO_BASE_URL; // auth backend origin
+
+function signOutEverywhere() {
+  // Local session first: it is what this system's own API trusts. Then hand
+  // the browser to the auth backend, which ends the SSO session and returns
+  // the user to a sign-in page.
+  fetch("/api/auth/logout/", { method: "POST", credentials: "include" })
+    .catch(() => {})
+    .finally(() => {
+      window.location.assign(
+        `${SSO}/auth/logout-redirect/?next=${encodeURIComponent(window.location.origin + "/")}`
+      );
+    });
+}
+```
+
+If the system has no local logout endpoint, drop the `fetch` and just navigate.
+
+### Server side, when you have a token
+
+A backend holding an access token can revoke it directly, with no cookie and no
+browser:
+
+```bash
+curl -X POST https://greenhill-auth-backend2.onrender.com/auth/logout/ \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+```json
+{
+  "authenticated": false,
+  "message": "You have been signed out successfully.",
+  "sessions_revoked": 1,
+  "access_tokens_revoked": 1,
+  "refresh_tokens_revoked": 1,
+  "redirect_to": "https://greenhill-auth-frontend2.onrender.com/"
+}
+```
+
+`redirect_to` is where a JSON caller should send the browser. It honours a
+`next` passed in the body, under the same trust rules.
+
+Only a **live** token identifies anyone: an expired or unknown bearer value
+revokes nothing, and an inactive account revokes nothing. When both a session
+cookie and a bearer token are present the cookie wins, because that is the
+browser's own sign-out.
+
+| Endpoint | Ends | Revokes | Method |
+| --- | --- | --- | --- |
+| `/auth/logout/` | this session | all tokens for the account | `POST` |
+| `/auth/logout-everywhere/` | every session | all tokens for the account | `POST` |
+| `/auth/logout-redirect/?next=` | this session | all tokens for the account | `GET` (navigation) |
+
+Note the middle column: sign-out is global by design. A person who signs out of
+EID is signed out of PMS and ISMP too, and has to log in again — which is the
+behaviour requested, and the only version that cannot leave a live token behind
+in a system nobody remembered to tidy.
+
+### What each system must also do
+
+* **Clear its own session.** The auth backend cannot delete EID's Django session
+  or PMS's cookie. Do that in the system's own `/logout/`, in the same click.
+* **Do not cache the token.** After sign-out every API call must be prepared to
+  get `401` and show the sign-in page rather than an empty shell.
+* **Do not reuse the old token.** A revoked token is deleted, so presenting it
+  returns `401 invalid_token`, not a stale success.
+
+---
+
+## 7. How to prove it works
+
 
 1. Sign in to the auth app as a test user; set a first and last name and upload
    an avatar.
@@ -299,3 +396,7 @@ edits them.
    must show the new name (EID: after 3c returns a new `profile_version`).
 4. Sign out in one system; the others must not let you back in without a fresh
    password.
+5. Before signing in again, replay the old access token against `/o/userinfo/`.
+   It must answer `401`. After signing in again, the new token must be a
+   different value — that is the proof that a new token is issued per login.
+

@@ -17,12 +17,55 @@ which is what the toolkit's own ``cleartokens`` command does.
 
 import logging
 
+from django.utils import timezone
 from oauth2_provider.models import (
     get_access_token_model,
     get_refresh_token_model,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def user_from_bearer_token(raw_token):
+    """The account behind an ``Authorization: Bearer`` value, or ``None``.
+
+    Sign-out needs a second way to identify the caller. The three systems are
+    served from sibling ``*.onrender.com`` hosts, and that suffix is on the
+    public suffix list, so a ``fetch`` from one of their pages to this service
+    is a *third-party* request: the browser may withhold the session cookie
+    even with ``SameSite=None``. A relying party's backend, holding the access
+    token it was given, can always present it server-to-server -- and that is
+    the only reliable way to revoke.
+
+    Only a *live* token resolves. An expired one identifies nobody: accepting
+    it would let a stale value force repeated sign-outs, and it cannot prove
+    the presenter is the person it names.
+
+    The lookup is by raw token text because that is what Django OAuth Toolkit
+    stores in ``AccessToken.token`` (``token_checksum`` is an index built from
+    it, not a replacement).
+    """
+    if not raw_token:
+        return None
+
+    AccessToken = get_access_token_model()
+
+    token = (
+        AccessToken.objects.select_related("user")
+        .filter(token=raw_token)
+        .first()
+    )
+
+    if token is None or token.expires is None:
+        return None
+
+    if token.expires <= timezone.now():
+        return None
+
+    if token.user is None or not token.user.is_active:
+        return None
+
+    return token.user
 
 
 def revoke_user_tokens(user, client=None):
